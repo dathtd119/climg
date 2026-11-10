@@ -134,6 +134,33 @@ class JsonOutput(Env):
         self.assertEqual(doc["removed"], [])
         self.assertFalse(os.path.exists(self.tplfile))
 
+    def test_nodetpl_kept_in_json(self):
+        images = [{"id": "sha256:" + "0" * 64, "tags": [TAG], "size": 1, "labels": {}, "entrypoint": [],
+                   "vrnetlab": True, "dangling": False, "created": ""}]
+        with mock.patch("climg.dockerx.list_images", return_value=images):
+            rc, out, err = self.cli("nodetpl", "--json", "--writer", "file", "--", "sync")
+            self.assertEqual(rc, 0, err)
+            with open(self.tplfile) as f:
+                data = json.load(f)
+            for c in data:
+                if c["name"] == "paloalto-pa-vm-11.2.5":
+                    c["interfacePattern"] = "ge-{n}"
+                    c["icon"] = "switch"
+                    c["baseName"] = "old"
+            with open(self.tplfile, "w") as f:
+                json.dump(data, f)
+            owned = os.path.join(self.state, "nodetpl-owned.json")
+            with open(owned) as f:
+                doc = json.load(f)
+            doc["generated"]["paloalto-pa-vm-11.2.5"].update(icon="router", baseName="old")   # as if climg's output changed
+            with open(owned, "w") as f:
+                json.dump(doc, f)
+            rc, out, err = self.cli("nodetpl", "--json", "--writer", "file", "--dry-run", "--", "sync")
+        doc = self.one_json(out)
+        self.assertEqual(doc["changes"], [{"action": "updated", "name": "paloalto-pa-vm-11.2.5",
+                                           "kept": ["icon", "interfacePattern"]}])
+        self.assertEqual(doc["updated"], ["paloalto-pa-vm-11.2.5"])
+
     def test_json_on_each_command(self):                      # tasks 2.1: pull/add/build/template/nodetpl add|remove
         self.assertEqual(self.build_local("--no-nodetpl")["status"], "built")                       # build
         rc, out, _ = self.cli("add", "--json", "--", os.path.join(self.images, LOCAL))

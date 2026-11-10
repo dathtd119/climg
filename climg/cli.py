@@ -501,17 +501,17 @@ def _writer(args, cfg):
 
 
 def _tpl_result(action, changes, skipped, via, dry):
-    names = lambda *acts: [n for a, n in changes if a in acts]  # noqa: E731
+    names = lambda *acts: [n for a, n, _ in changes if a in acts]  # noqa: E731
     return {"action": action, "dry_run": dry, "writer": via,
-            "changes": [{"action": a, "name": n} for a, n in changes],
+            "changes": [{"action": a, "name": n, **({"kept": k} if a == "updated" else {})} for a, n, k in changes],
             "skipped": [{"name": n, "reason": why} for n, why in skipped],
             "added": names("created"), "updated": names("updated"), "removed": names("deleted")}
 
 
 def _report(changes, skipped, via, dry):
     pre = "would " if dry else ""
-    for action, name in changes:
-        print(f"{pre}{action:<8} {name}")
+    for action, name, kept in changes:
+        print(f"{pre}{action:<8} {name}" + (f" (kept your {', '.join(kept)})" if kept else ""))
     for name, why in skipped:
         print(f"skipped  {name}: {why}")
     if not changes:
@@ -523,10 +523,14 @@ def cmd_nodetpl(args, cfg, kinds):
     w = _writer(args, cfg)
     if args.action == "list":
         cur, owned, via = nodetpl.list_templates(cfg, w)
+        gen, regen = nodetpl.load_generated(cfg), nodetpl.regen_for(kinds)
+        custom = {c.get("name") for c in cur if c.get("name") in owned
+                  and nodetpl.is_customized(c, gen.get(c.get("name")), regen)}
         rows = [(("*" if c.get("name") in owned else " "), c.get("name"), c.get("kind"), c.get("image", "-"),
                  c.get("icon", "-")) for c in cur]
         if args.json:
-            return emit_json([{"name": r[1], "kind": r[2], "image": r[3], "icon": r[4], "owned": r[0] == "*"}
+            return emit_json([{"name": r[1], "kind": r[2], "image": r[3], "icon": r[4], "owned": r[0] == "*",
+                               "customized": r[1] in custom}
                               for r in rows])
         print(table(rows, ["OWN", "NAME", "KIND", "IMAGE", "ICON"]))
         print(f"\n{len(rows)} templates, {sum(1 for r in rows if r[0] == '*')} owned by climg (*); writer: {via}")
@@ -534,7 +538,7 @@ def cmd_nodetpl(args, cfg, kinds):
     if args.action == "sync":
         ops = nodetpl.sync_ops(cfg, kinds)
         progress("template", None, "syncing node templates")
-        res = nodetpl.apply_ops(cfg, ops, w, dry_run=args.dry_run)
+        res = nodetpl.apply_ops(cfg, ops, w, dry_run=args.dry_run, kinds=kinds)
         _report(*res, args.dry_run)
         _out(args, _tpl_result("sync", *res, args.dry_run))
         return 0
@@ -548,7 +552,7 @@ def cmd_nodetpl(args, cfg, kinds):
             raise ClimgError(f"{rec['key']} is not built yet (status {st}); `climg pull {rec['key']} --yes` first",
                              "not_found")
         e = nodetpl.entry_for_tag(kinds, inv.built_tag(rec))
-        res = nodetpl.apply_ops(cfg, [("upsert", e)], w)
+        res = nodetpl.apply_ops(cfg, [("upsert", e)], w, kinds=kinds)
         _report(*res, False)
         _out(args, {**_tpl_result("add", *res, False), "template": e})
         return 0

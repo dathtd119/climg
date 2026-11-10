@@ -118,6 +118,16 @@ deletes any other template (a clashing foreign name is skipped with a warning), 
 and merges only its own entries, under an flock (`locks/nodetpl.lock`). The first write to a missing file starts from the
 two built-in defaults the app serves (SRLinux Latest, Network Multitool) so the UI does not lose them.
 
+Your edits are kept: `nodetpl-owned.json` also stores the last entry climg generated per template (`generated`). When
+climg regenerates a managed template (pull/add/build/`nodetpl sync`/`nodetpl add`) it does a field-level three-way merge:
+fields you changed in the app (including a deleted or an added field, and `env` as a whole) keep your value, untouched
+fields take the newly generated value, and `setDefault` stays yours. The kept fields are named in the output (`updated
+(kept your interfacePattern)`) and as `kept: [...]` in the JSON (`changes[]`, and `nodetpl` of pull/add/build). A template
+written by an older climg (no stored baseline) counts as edited in every field that differs from what climg generates
+now. `nodetpl sync` does not delete a template whose image is gone if you edited it: it is reported in `skipped` as
+`edited by user; image missing`. `nodetpl remove <name>` still removes it, and `nodetpl list --json` marks such
+templates `customized: true`.
+
 Writers (`nodetpl_writer`, `--writer`):
 
 * `rest` - POST/DELETE per entry on `/api/runtime/ui/custom-nodes` (session cookie from `/auth/endpoints`, self-signed

@@ -363,10 +363,10 @@ class NodeTemplateTests(unittest.TestCase):
                                           ("delete", mine["name"])], {mine["name"]})
         self.assertEqual([c["name"] for c in new], ["ui-test-keep", "cisco-vios-159-3.m6"])
         self.assertEqual(new[1], clash)                       # unowned clash untouched
-        self.assertEqual(ch, [("deleted", mine["name"])])
+        self.assertEqual(ch, [("deleted", mine["name"], [])])
         self.assertEqual({n for n, _ in sk}, {"cisco-vios-159-3.m6", "ui-test-keep"})
         again, ch2, _ = nodetpl.merge(new, [("upsert", mine)], set())
-        self.assertEqual(ch2, [("created", mine["name"])])
+        self.assertEqual(ch2, [("created", mine["name"], [])])
         _, ch3, _ = nodetpl.merge(again, [("upsert", mine)], {mine["name"]})
         self.assertEqual(ch3, [])                              # idempotent, nothing duplicated
 
@@ -389,8 +389,129 @@ class NodeTemplateTests(unittest.TestCase):
             nodetpl.save_owned(cfg, {"cisco-vios-159-3.m6", "gone-1"})
             im = [{"vrnetlab": True, "tags": ["vrnetlab/cisco_vios:159-3.m6"]}]
             ops = nodetpl.sync_ops(cfg, KINDS, im)
-            self.assertEqual([o[0] for o in ops], ["upsert", "delete"])
+            self.assertEqual([o[0] for o in ops], ["upsert", "prune"])
             self.assertEqual(ops[1][1], "gone-1")
+
+
+class KeepUserEditsTests(unittest.TestCase):
+    VSRX = "vrnetlab/juniper_vsrx:24.4R1.9"
+    XRV = "vrnetlab/cisco_xrv9k:24.3.1"          # has env
+
+    def gen(self, tag=None, **over):
+        return {**nodetpl.entry_for_tag(KINDS, tag or self.VSRX), **over}
+
+    def up(self, cur, theirs, base, owned=True):
+        return nodetpl.merge(cur, [("upsert", theirs)], {theirs["name"]} if owned else set(),
+                             {theirs["name"]: base} if base is not None else {}, nodetpl.regen_for(KINDS))
+
+    def test_unchanged_fields_take_new(self):
+        base = self.gen()
+        new, ch, _ = self.up([dict(base)], self.gen(icon="switch", image="vrnetlab/juniper_vsrx:25.1"), base)
+        self.assertEqual(new[0]["icon"], "switch")
+        self.assertEqual(ch, [("updated", base["name"], [])])
+
+    def test_user_changed_field_kept_others_updated(self):
+        base = self.gen()
+        cur = {**base, "interfacePattern": "gei-0/1/{n}"}
+        new, ch, _ = self.up([cur], self.gen(icon="switch"), base)
+        self.assertEqual(new[0]["interfacePattern"], "gei-0/1/{n}")
+        self.assertEqual(new[0]["icon"], "switch")
+        self.assertEqual(ch, [("updated", base["name"], ["interfacePattern"])])
+
+    def test_user_deleted_key_stays_deleted(self):
+        base = self.gen(self.XRV)
+        cur = {k: v for k, v in base.items() if k != "env"}
+        new, ch, _ = self.up([cur], self.gen(self.XRV, icon="switch"), base)
+        self.assertNotIn("env", new[0])
+        self.assertEqual(ch[0][2], ["env"])
+
+    def test_user_added_key_stays(self):
+        base = self.gen()
+        new, ch, _ = self.up([{**base, "extra": 1}], self.gen(icon="switch"), base)
+        self.assertEqual(new[0]["extra"], 1)
+        self.assertEqual(ch[0][2], ["extra"])
+
+    def test_nested_env_compared_whole(self):
+        base = self.gen(self.XRV)
+        cur = {**base, "env": {**base["env"], "QEMU_MEMORY": "1"}}
+        theirs = self.gen(self.XRV, env={**base["env"], "OTHER": "x"}, icon="switch")
+        new, ch, _ = self.up([cur], theirs, base)
+        self.assertEqual(new[0]["env"], cur["env"])
+        self.assertEqual(ch[0][2], ["env"])
+
+    def test_setdefault_stays_users(self):
+        base = self.gen()
+        new, ch, _ = self.up([{**base, "setDefault": True}], self.gen(), base)
+        self.assertTrue(new[0]["setDefault"])
+        self.assertEqual(ch, [])
+
+    def test_no_base_equal_to_regenerated_is_unchanged(self):
+        cur = self.gen()
+        new, ch, _ = self.up([dict(cur)], self.gen(), None)
+        self.assertEqual((new, ch), ([cur], []))
+        new, ch, _ = self.up([{**cur, "icon": "old"}], self.gen(), None)      # differs from regenerated: an edit
+        self.assertEqual(new[0]["icon"], "old")
+
+    def test_no_base_differs_keeps_edit_fills_missing(self):
+        cur = {k: v for k, v in self.gen(self.XRV).items() if k != "env"}
+        cur["interfacePattern"] = "gei-0/1/{n}"
+        new, ch, _ = self.up([cur], self.gen(self.XRV, icon="switch"), None)
+        self.assertEqual(new[0]["interfacePattern"], "gei-0/1/{n}")
+        self.assertIn("env", new[0])                       # missing field filled
+        self.assertEqual(new[0]["icon"], "router")         # differs from theirs -> treated as edit, kept
+        self.assertIn("interfacePattern", ch[0][2])
+
+    def test_sync_prune_skips_edited(self):
+        e = self.gen()
+        edited = {**e, "interfacePattern": "gei-0/1/{n}"}
+        for base in (e, None):                             # with base / migration (regenerated)
+            new, ch, sk = nodetpl.merge([edited], [("prune", e["name"])], {e["name"]},
+                                        {e["name"]: base} if base else {}, nodetpl.regen_for(KINDS))
+            self.assertEqual((new, ch), ([edited], []))
+            self.assertEqual(sk, [(e["name"], "edited by user; image missing")])
+
+    def test_sync_prune_deletes_untouched_and_remove_forces(self):
+        e = self.gen()
+        edited = {**e, "interfacePattern": "x"}
+        _, ch, sk = nodetpl.merge([dict(e)], [("prune", e["name"])], {e["name"]}, {e["name"]: e}, None)
+        self.assertEqual((ch, sk), ([("deleted", e["name"], [])], []))
+        new, ch, _ = nodetpl.merge([edited], [("delete", e["name"])], {e["name"]}, {e["name"]: e}, None)
+        self.assertEqual((new, ch), ([], [("deleted", e["name"], [])]))
+
+    def test_owned_file_formats_and_atomic_baseline(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Config({"state_dir": d}, "x")
+            os.makedirs(os.path.dirname(cfg.nodetpl_owned_file), exist_ok=True)
+            with open(cfg.nodetpl_owned_file, "w") as f:
+                json.dump({"names": ["a"]}, f)                                    # older format
+            self.assertEqual(nodetpl.load_owned(cfg), {"a"})
+            self.assertEqual(nodetpl.load_generated(cfg), {})
+            nodetpl.save_owned(cfg, {"a"}, {"a": {"name": "a"}})
+            with open(cfg.nodetpl_owned_file) as f:
+                doc = json.load(f)
+            self.assertEqual(doc, {"names": ["a"], "generated": {"a": {"name": "a"}}})
+
+    def test_apply_ops_end_to_end_json_and_list(self):
+        with tempfile.TemporaryDirectory() as d:
+            cfg = Config({"state_dir": d, "nodetpl_file": os.path.join(d, "ui", "custom-nodes.json"),
+                          "nodetpl_url": "https://127.0.0.1:1"}, "x")
+            w = nodetpl.FileWriter(cfg)
+            e = self.gen()
+            nodetpl.apply_ops(cfg, [("upsert", e)], w, kinds=KINDS)
+            with open(cfg.nodetpl_file) as f:
+                data = json.load(f)
+            for c in data:
+                if c["name"] == e["name"]:
+                    c["interfacePattern"] = "gei-0/1/{n}"
+            with open(cfg.nodetpl_file, "w") as f:
+                json.dump(data, f)
+            ch, _, _ = nodetpl.apply_ops(cfg, [("upsert", self.gen(icon="switch"))], w, kinds=KINDS)
+            self.assertEqual(ch, [("updated", e["name"], ["interfacePattern"])])
+            with open(cfg.nodetpl_file) as f:
+                cur = {c["name"]: c for c in json.load(f)}[e["name"]]
+            self.assertEqual((cur["interfacePattern"], cur["icon"]), ("gei-0/1/{n}", "switch"))
+            self.assertEqual(nodetpl.load_generated(cfg)[e["name"]]["icon"], "switch")
+            self.assertTrue(nodetpl.is_customized(cur, nodetpl.load_generated(cfg)[e["name"]]))
 
 
 class InitTests(unittest.TestCase):
