@@ -130,6 +130,33 @@ Writers (`nodetpl_writer`, `--writer`):
 `nodetpl sync` = one template per built vrnetlab image of a known kind (including images not built by climg) and removal
 of owned templates whose image is gone; `--dry-run` only reports.
 
+## Machine interface (contract version 1)
+
+For programs that run climg as a subprocess (`climg --version` prints `climg <version> (contract 1)`; `climg config
+--json` reports `contract_version`).
+
+* `--json` on `index search show images scan lab pull add build template init config nodetpl doctor`: stdout is exactly
+  one JSON document; warnings and progress go to stderr. Text output without `--json` is unchanged. Failures print
+  `{"error": {"code": ..., "message": ...}}`. Codes: `needs_yes not_found invalid_ref disk_floor locked no_config
+  build_failed download_failed cancelled` (plus `error` for anything else).
+* Exit codes: `0` success or no-op, `1` runtime failure, `2` command-line usage error only, `3` needs `--yes`,
+  `4` cancelled (SIGTERM), `130` interrupted from the terminal.
+* Argument order: all options first, then `--`, then every positional (for `nodetpl` the action is a positional):
+  `climg nodetpl --json --writer file --nodetpl-file P -- add <ref>`, `climg show --json -- <ref>`,
+  `climg pull --yes --json --job-file F --no-nodetpl -- <ref>`. (`nodetpl <action> --json -- <ref>` does not parse on
+  Python <= 3.12.3.)
+* `--job-file PATH` on `pull`, `add --build`, `build`, `nodetpl sync`: atomically rewritten
+  `{state, phase, pct, message, log, started, updated}`; `state` is `queued|running|succeeded|failed|cancelled`, `phase`
+  `wait|download|extract|build|template|done` (`queued`/`wait` while all build slots are busy). The last write also holds
+  `result`, the same object `--json` prints.
+* SIGTERM stops the build children, runs `docker rm -f` on containers recorded in a `cidfile` of the work copy, removes
+  the work copy, keeps a partial download (resumable), releases the locks, writes `cancelled` and exits 4.
+* `--no-nodetpl` (pull/add/build) skips the Node Template write; the result's `nodetpl` names the template that would
+  be written. `--nodetpl-file PATH` / `CLIMG_NODETPL_FILE` name the template file for `nodetpl` commands.
+* No command reads stdin under `--yes` or `--json`; `init` without `--yes` and without a terminal exits 3.
+* The configured lab password never appears in `--json` output, job files or log tails (`template --json` and
+  `show --json` carry a placeholder). `template -o` still writes the real credentials into the lab file you asked for.
+
 ## Safety
 
 climg never modifies the vrnetlab checkout, never executes anything shipped inside an image, never deletes docker
