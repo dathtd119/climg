@@ -84,7 +84,7 @@ class Config:
     def need_credentials(self):
         c = self.credentials
         if not (isinstance(c, dict) and c.get("username") and c.get("password")):
-            raise ClimgError(f"credentials {{username, password}} are not set in {self.path or config_path()}")
+            raise ClimgError(f"credentials {{username, password}} are not set in {self.path or config_path()}", "no_config")
         return c
 
 

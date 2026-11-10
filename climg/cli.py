@@ -5,23 +5,52 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
 import urllib.request
 
-from . import __version__, build, dockerx, index as ix, lab as labmod, nodetpl, registry, setup, smoke, template
+from . import CONTRACT_VERSION, __version__, build, dockerx, index as ix, job as jobmod, lab as labmod, nodetpl, \
+    registry, setup, smoke, template, util
 from .catalog import load_kinds
 from .config import config_path, load_config
 from .core import Inventory
-from .util import UA, ClimgError, Log, emit_json, free_bytes, gb, hash_file, human, run, table, version_key, warn
+from .util import (UA, Cancelled, ClimgError, Log, NeedsYes, emit_json, free_bytes, gb, hash_file, human, run,
+                   progress, set_result, table, version_key, warn)
+
+# exit codes (machine interface contract)
+EXIT_OK, EXIT_FAIL, EXIT_USAGE, EXIT_NEEDS_YES, EXIT_CANCELLED, EXIT_INTERRUPT = 0, 1, 2, 3, 4, 130
+# stable error codes of the --json error envelope
+ERROR_CODES = ("needs_yes", "not_found", "invalid_ref", "disk_floor", "locked", "no_config", "build_failed",
+               "download_failed", "cancelled", "error")
 
 
 def _need_yes(args, what):
+    """Soft confirmation (lab --pull): report and carry on without acting."""
     if not args.yes:
         print(f"{what}\nRe-run with --yes to proceed (nothing was changed).")
         return False
     return True
+
+
+def _confirm(args, what):
+    """Hard confirmation: without --yes nothing changes and the command ends with exit status 3 (`needs_yes`)."""
+    if not args.yes:
+        raise NeedsYes(f"{what} Re-run with --yes to proceed (nothing was changed).",
+                       f"{what}\nRe-run with --yes to proceed (nothing was changed).")
+
+
+def _out(args, result):
+    """Record the command's result object; with --json it is the one document on stdout."""
+    set_result(result)
+    if getattr(args, "json", False):
+        emit_json(result)
+
+
+def _tpl_name(kinds, tag):
+    e = nodetpl.entry_for_tag(kinds, tag)
+    return {"name": e["name"], "written": False, "entry": e} if e else None
 
 
 def _public(rec):
@@ -110,6 +139,8 @@ def cmd_show(args, cfg, kinds):
             make_ver = f"(version-test failed: {str(ex).splitlines()[0]})"
     tag = inv.built_tag(rec) if kind else rec.get("tag")
     creds = cfg.credentials if (cfg.credentials or {}).get("username") else {"username": "<user>", "password": "<pw>"}
+    if args.json:   # machine output never carries the configured password
+        creds = {"username": creds["username"], "password": util.REDACTED}
     snippet = None
     if kind and tag:
         snippet = template.render_topology(kind, tag, creds, rec.get("version") or "x", rec["key"])[1]["topology"]["kinds"]
@@ -209,6 +240,8 @@ def cmd_lab(args, cfg, kinds):
             if t:
                 topos.append(t)
     if not topos:
+        if args.json:
+            raise ClimgError("no containerlab topologies found", "not_found")
         print("no containerlab topologies found")
         return 1
     cache, results = {}, []
@@ -283,11 +316,11 @@ def cmd_pull(args, cfg, kinds):
     st, det = inv.status(rec)
     if st == "built" and not args.force and not args.tag:
         print(f"no-op: {rec['key']} is already built as {det}")
-        return 0
+        return _out(args, {"ref": rec["key"], "status": "noop", "tag": det, "nodetpl": _tpl_name(kinds, det)}) or 0
     if not rec.get("kind"):
-        raise ClimgError(f"{rec['key']} has no buildable kind; see `climg search --all`")
+        raise ClimgError(f"{rec['key']} has no buildable kind; see `climg search --all`", "not_found")
     if rec["source"] == "docker":
-        raise ClimgError(f"{rec['key']} is a docker image with no known source")
+        raise ClimgError(f"{rec['key']} is a docker image with no known source", "not_found")
     kind = kinds.get(rec["kind"])
     if rec["source"] == "labhub":
         have = inv.cached_source(rec)
@@ -295,13 +328,13 @@ def cmd_pull(args, cfg, kinds):
                 f"download {human(rec['size'])} then build {rec['tag']}")
     else:
         what = f"build {rec['tag']} from {rec['path']}"
-    if not _need_yes(args, f"Would {what} ({kind.dir}, work copy under {cfg.work_dir})."):
-        return 2
+    _confirm(args, f"Would {what} ({kind.dir}, work copy under {cfg.work_dir}).")
     log = Log(cfg, rec["name"])
     tag = (build.pull_labhub(cfg, inv, rec, log, args.force, tag=args.tag) if rec["source"] == "labhub"
            else _build_local(cfg, inv, rec, log, args.force, tag=args.tag))
     print(f"done: {tag}   next: climg template {rec['key']} -o ./tpl   |   climg test {rec['key']}")
-    nodetpl.after_build(cfg, kinds, tag)
+    tpl = nodetpl.after_build(cfg, kinds, tag, write=not args.no_nodetpl)
+    _out(args, {"ref": rec["key"], "status": "built", "tag": tag, "nodetpl": tpl})
 
 
 # ------------------------------------------------------------------ add
@@ -313,27 +346,30 @@ def cmd_build(args, cfg, kinds):
         inv = Inventory(cfg, kinds, need_index=False, quiet=True)
         rec = inv.resolve(ref)
         if inv.is_built(rec):
-            print(f"no-op: {rec['key']} is already built as {inv.built_tag(rec)}")
-            return 0
-        if not _need_yes(args, f"Would build {rec['tag']} from {rec['path']}."):
-            return 2
+            tag = inv.built_tag(rec)
+            print(f"no-op: {rec['key']} is already built as {tag}")
+            return _out(args, {"ref": rec["key"], "status": "noop", "tag": tag, "nodetpl": _tpl_name(kinds, tag)}) or 0
+        _confirm(args, f"Would build {rec['tag']} from {rec['path']}.")
         tag = _build_local(cfg, inv, rec, Log(cfg, rec["name"]), False)
         print(f"built {tag}")
-        nodetpl.after_build(cfg, kinds, tag)
+        tpl = nodetpl.after_build(cfg, kinds, tag, write=not args.no_nodetpl)
+        _out(args, {"ref": rec["key"], "status": "built", "tag": tag, "nodetpl": tpl})
         return 0
     args.build = True
+    args.file = ref
     return cmd_add(args, cfg, kinds)
 
 
 def cmd_add(args, cfg, kinds):
     path = os.path.realpath(os.path.expanduser(args.file))
     if not os.path.isfile(path):
-        raise ClimgError(f"{args.file}: not a file")
+        raise ClimgError(f"{args.file}: not a file", "not_found")
     fn = os.path.basename(path)
     rec = registry.local_record(kinds, fn, path, kind=args.kind, ver=args.version)
     if rec is None:
         ex = "; ".join(f"{k.name}: {k.example}" for k in kinds if k.example)
-        raise ClimgError(f"cannot detect kind/version from {fn!r}. Pass --kind K --version V. Known names: {ex}")
+        raise ClimgError(f"cannot detect kind/version from {fn!r}. Pass --kind K --version V. Known names: {ex}",
+                         "invalid_ref")
     kind = kinds.get(rec["kind"])
     if os.path.splitext(fn)[1].lower() not in kind.image_ext:
         warn(f"{fn}: extension is not one of {kind.image_ext} for {kind.name}; vrnetlab may reject it")
@@ -350,26 +386,31 @@ def cmd_add(args, cfg, kinds):
         rec["extra_tags"] = [args.tag]
     registry.register(cfg, rec)
     print(f"registered {rec['key']}  size {human(rec['size'])}  sha1 {rec['sha1']}  (original file kept at {path})")
+    result = {"ref": rec["key"], "status": "registered", "kind": kind.name, "version": rec["version"],
+              "tag": rec["tag"], "path": path, "size": rec["size"], "sha1": rec["sha1"], "nodetpl": None}
     if args.build:
         final = args.tag or rec["tag"]
-        if not _need_yes(args, f"Would build {final} from {path}."):
-            return 2
+        _confirm(args, f"Would build {final} from {path}.")
         log = Log(cfg, rec["name"])
         done = build.build_image(cfg, kind, rec["target"], path, "plain", log, tag=args.tag, key=rec["key"])
         print(f"built {done}")
-        nodetpl.after_build(cfg, kinds, done)
+        result.update(status="built", tag=done,
+                      nodetpl=nodetpl.after_build(cfg, kinds, done, write=not args.no_nodetpl))
     else:
         print(f"next: climg pull {rec['key']} --yes")
+    _out(args, result)
 
 
 # ------------------------------------------------------------------ template
 
 def cmd_template(args, cfg, kinds):
     creds = cfg.need_credentials()
+    if args.json:   # machine output never carries the configured password
+        creds = {"username": creds["username"], "password": util.REDACTED}
     inv = Inventory(cfg, kinds, need_index=True, quiet=True)
     rec = inv.resolve(args.ref)
     if not rec.get("kind"):
-        raise ClimgError(f"{rec['key']} has no buildable kind")
+        raise ClimgError(f"{rec['key']} has no buildable kind", "not_found")
     kind = kinds.get(rec["kind"])
     tag = inv.built_tag(rec)
     ver = rec.get("version") or "x"
@@ -377,6 +418,10 @@ def cmd_template(args, cfg, kinds):
     if st != "built":
         warn(f"{tag} is not built yet (run `climg pull {rec['key']} --yes`); template uses the predicted tag")
     wrote = []
+    if args.json and not args.output and not args.ui:   # a program asked for the content: write nothing
+        text, doc = template.render_topology(kind, tag, creds, ver, rec["key"])
+        return _out(args, {"ref": rec["key"], "tag": tag, "built": st == "built", "wrote": [],
+                           "topology": doc, "text": text}) or 0
     if args.output or not args.ui:
         out_dir = args.output or "."
         os.makedirs(out_dir, exist_ok=True)
@@ -392,6 +437,7 @@ def cmd_template(args, cfg, kinds):
         print(f"wrote {w}")
     if wrote and wrote[0].endswith(".clab.yml"):
         print(f"validate: containerlab validate -t {wrote[0]}")
+    _out(args, {"ref": rec["key"], "tag": tag, "built": st == "built", "wrote": wrote, "topology": None})
 
 
 # ------------------------------------------------------------------ scan
@@ -433,24 +479,33 @@ def cmd_init(args, cfg, kinds):
     for n in notes:
         print("  " + n)
     if not args.yes:
-        if not sys.stdin.isatty():
-            print("Not interactive: re-run with --yes to write this config (nothing was changed).")
-            return 2
+        if args.json or not sys.stdin.isatty():
+            raise NeedsYes("init needs --yes when it cannot ask (stdin is not a terminal or --json is given)",
+                           "Not interactive: re-run with --yes to write this config (nothing was changed).")
         if input("Write this config and create the directories? [y/N] ").strip().lower() not in ("y", "yes"):
             print("aborted (nothing was changed)")
-            return 2
+            return 1
     setup.write_config(path, new)
     made = setup.make_dirs(new)
     print(f"wrote {path}")
     for d in made:
         print(f"created {d}")
     print("next: climg scan   |   climg nodetpl sync --dry-run")
+    _out(args, {"config": path, "created": made})
 
 
 # ------------------------------------------------------------------ nodetpl
 
 def _writer(args, cfg):
     return nodetpl.pick_writer(cfg, getattr(args, "writer", None))
+
+
+def _tpl_result(action, changes, skipped, via, dry):
+    names = lambda *acts: [n for a, n in changes if a in acts]  # noqa: E731
+    return {"action": action, "dry_run": dry, "writer": via,
+            "changes": [{"action": a, "name": n} for a, n in changes],
+            "skipped": [{"name": n, "reason": why} for n, why in skipped],
+            "added": names("created"), "updated": names("updated"), "removed": names("deleted")}
 
 
 def _report(changes, skipped, via, dry):
@@ -478,22 +533,46 @@ def cmd_nodetpl(args, cfg, kinds):
         return 0
     if args.action == "sync":
         ops = nodetpl.sync_ops(cfg, kinds)
-        _report(*nodetpl.apply_ops(cfg, ops, w, dry_run=args.dry_run), args.dry_run)
+        progress("template", None, "syncing node templates")
+        res = nodetpl.apply_ops(cfg, ops, w, dry_run=args.dry_run)
+        _report(*res, args.dry_run)
+        _out(args, _tpl_result("sync", *res, args.dry_run))
         return 0
     if args.action == "add":
         inv = Inventory(cfg, kinds, quiet=True)
         rec = inv.resolve(args.target)
         if not rec.get("kind"):
-            raise ClimgError(f"{rec['key']} has no buildable kind")
+            raise ClimgError(f"{rec['key']} has no buildable kind", "not_found")
         st, _ = inv.status(rec)
         if st != "built":
-            raise ClimgError(f"{rec['key']} is not built yet (status {st}); `climg pull {rec['key']} --yes` first")
+            raise ClimgError(f"{rec['key']} is not built yet (status {st}); `climg pull {rec['key']} --yes` first",
+                             "not_found")
         e = nodetpl.entry_for_tag(kinds, inv.built_tag(rec))
-        _report(*nodetpl.apply_ops(cfg, [("upsert", e)], w), False)
+        res = nodetpl.apply_ops(cfg, [("upsert", e)], w)
+        _report(*res, False)
+        _out(args, {**_tpl_result("add", *res, False), "template": e})
         return 0
     if args.action == "remove":
-        _report(*nodetpl.apply_ops(cfg, [("delete", args.target)], w), False)
+        res = nodetpl.apply_ops(cfg, [("delete", args.target)], w)
+        _report(*res, False)
+        _out(args, _tpl_result("remove", *res, False))
         return 0
+
+
+# ------------------------------------------------------------------ config
+
+def cmd_config(args, cfg, kinds):
+    """Effective configuration for programs; credential values are never included."""
+    info = {"contract_version": CONTRACT_VERSION, "version": __version__, "config_file": cfg.path,
+            "config_exists": cfg.exists, "state_dir": cfg.state, "images_dirs": cfg.images_dirs,
+            "disk_floor_gb": cfg.disk_floor / 1e9, "disk_floor_bytes": cfg.disk_floor, "max_builds": cfg.max_builds,
+            "mirrors": cfg.mirrors, "index_ttl_hours": cfg.index_ttl / 3600, "vrnetlab": cfg.vrnetlab,
+            "workspace": cfg.workspace, "nodetpl_file": cfg.nodetpl_file, "nodetpl_writer": cfg.nodetpl_writer,
+            "nodetpl_url": cfg.nodetpl_url, "credentials_set": bool((cfg.credentials or {}).get("password"))}
+    if args.json:
+        return emit_json(info)
+    for k, v in info.items():
+        print(f"{k:<16} {v}")
 
 
 # ------------------------------------------------------------------ doctor
@@ -622,7 +701,7 @@ def make_parser():
     ap = argparse.ArgumentParser(prog="climg", description="containerlab image manager "
                                  "(LabHub search/pull -> vrnetlab build -> containerlab templates)")
     ap.add_argument("--config", help="config file (default ~/.config/climg/config.yaml)")
-    ap.add_argument("--version", action="version", version=f"climg {__version__}")
+    ap.add_argument("--version", action="version", version=f"climg {__version__} (contract {CONTRACT_VERSION})")
     sp = ap.add_subparsers(dest="cmd", required=True, metavar="COMMAND")
 
     def add(name, fn, help_):
@@ -645,20 +724,32 @@ def make_parser():
     p = add("lab", cmd_lab, "check (and optionally fetch) the images a topology needs")
     p.add_argument("paths", nargs="*"); p.add_argument("--pull", action="store_true")
     p.add_argument("--yes", action="store_true"); p.add_argument("--json", action="store_true")
+    def machine(p, job=False, nodetpl_step=False):
+        p.add_argument("--json", action="store_true", help="one JSON document on stdout; progress/warnings on stderr")
+        if job:
+            p.add_argument("--job-file", metavar="PATH", help="atomically rewritten JSON progress file")
+        if nodetpl_step:
+            p.add_argument("--no-nodetpl", action="store_true", help="skip the Node Template write")
+
     p = add("pull", cmd_pull, "download, extract and build an image")
+    machine(p, True, True)
     p.add_argument("ref"); p.add_argument("--yes", action="store_true"); p.add_argument("--force", action="store_true")
     p.add_argument("--tag", help="build under this tag instead of the natural one (e.g. a temporary test tag)")
     p = add("add", cmd_add, "register a vendor-supplied image file")
+    machine(p, True, True)
     p.add_argument("file"); p.add_argument("--kind"); p.add_argument("--version"); p.add_argument("--tag")
     p.add_argument("--build", action="store_true"); p.add_argument("--yes", action="store_true")
     p = add("template", cmd_template, "write a 2-node .clab.yml and/or merge a UI node template")
+    machine(p)
     p.add_argument("ref"); p.add_argument("-o", "--output", metavar="DIR"); p.add_argument("--ui", metavar="JSON")
     p = add("init", cmd_init, "detect workspace/app/images dir, write the config, create the folders")
+    machine(p)
     p.add_argument("--workspace"); p.add_argument("--images-dir"); p.add_argument("--vrnetlab")
     p.add_argument("--app-container"); p.add_argument("--yes", action="store_true")
     p = add("scan", cmd_scan, "list image files in the images dir(s) with kind/version/tag/status")
     p.add_argument("--json", action="store_true")
     p = add("build", cmd_build, "register (add) and build a vendor image: a file or local:<key>")
+    machine(p, True, True)
     p.add_argument("ref"); p.add_argument("--kind"); p.add_argument("--version"); p.add_argument("--tag")
     p.add_argument("--yes", action="store_true")
     p = add("nodetpl", cmd_nodetpl, "manage the containerlab-app Node Templates climg owns")
@@ -666,6 +757,10 @@ def make_parser():
     p.add_argument("target", nargs="?", help="add: ref or image; remove: template name")
     p.add_argument("--dry-run", action="store_true"); p.add_argument("--json", action="store_true")
     p.add_argument("--writer", choices=["file", "rest"], help="override the configured writer (default auto)")
+    p.add_argument("--nodetpl-file", metavar="PATH", help="Node Template file to use (or CLIMG_NODETPL_FILE)")
+    p.add_argument("--job-file", metavar="PATH", help="atomically rewritten JSON progress file (sync)")
+    p = add("config", cmd_config, "print the effective configuration (no credential values)")
+    p.add_argument("--json", action="store_true")
     p = add("doctor", cmd_doctor, "check mirrors, docker, kvm, containerlab, vrnetlab, disk, config")
     p.add_argument("--json", action="store_true")
     p = add("test", cmd_test, "smoke test: deploy one node, SSH login, show version, destroy")
@@ -674,21 +769,78 @@ def make_parser():
     return ap
 
 
-NO_CONFIG_OK = ('init', 'doctor')
+NO_CONFIG_OK = ('init', 'doctor', 'config')
+
+
+def _error_doc(code, message):
+    return {"error": {"code": code, "message": message}}
 
 
 def main(argv=None):
-    args = make_parser().parse_args(argv)
+    args = make_parser().parse_args(argv)     # a usage error exits 2 here (argparse), nowhere else
+    as_json = getattr(args, "json", False)
+    saved = (sys.stdout, sys.stdin, signal.getsignal(signal.SIGTERM))
+    job = None
+    util.JSON_OUT = util.LOG_HOOK = util.PROGRESS_HOOK = util.LAST_RESULT = None
+    util.SECRETS = []
+
+    def on_term(signum, frame):
+        raise Cancelled()
+
+    signal.signal(signal.SIGTERM, on_term)
+    if as_json:
+        util.JSON_OUT, sys.stdout = sys.stdout, sys.stderr    # stdout carries the one JSON document only
+    if as_json or getattr(args, "yes", False):
+        sys.stdin = open(os.devnull)                           # never block on, or read, stdin
+    rc, state, doc, msg = EXIT_OK, "succeeded", None, ""
     try:
-        cfg = None if args.cmd == "init" else load_config(args.config)   # init rewrites a stale config
-        if cfg and not cfg.exists and args.cmd not in NO_CONFIG_OK:
-            raise ClimgError("no config: run `climg init`")
-        if args.cmd in ("nodetpl",) and args.action in ("add", "remove") and not args.target:
-            raise ClimgError(f"nodetpl {args.action} needs a target")
-        return args.fn(args, cfg, load_kinds()) or 0
-    except ClimgError as ex:
-        print(f"error: {ex}", file=sys.stderr)
-        return 1
-    except KeyboardInterrupt:
-        print("interrupted", file=sys.stderr)
-        return 130
+        try:
+            cfg = None if args.cmd == "init" else load_config(args.config)   # init rewrites a stale config
+            if cfg and not cfg.exists and args.cmd not in NO_CONFIG_OK:
+                raise ClimgError("no config: run `climg init`", "no_config")
+            if cfg:
+                util.SECRETS = [str(cfg.credentials["password"])] if (
+                    isinstance(cfg.credentials, dict) and cfg.credentials.get("password")) else []
+                tpl_file = getattr(args, "nodetpl_file", None) or os.environ.get("CLIMG_NODETPL_FILE")
+                if tpl_file:
+                    cfg.nodetpl_file = os.path.expanduser(tpl_file)
+            if getattr(args, "job_file", None):
+                job = jobmod.JobFile(args.job_file, "template" if args.cmd == "nodetpl" else "download")
+                util.LOG_HOOK, util.PROGRESS_HOOK = job.log_line, job.progress
+            if args.cmd in ("nodetpl",) and args.action in ("add", "remove") and not args.target:
+                raise ClimgError(f"nodetpl {args.action} needs a target", "invalid_ref")
+            rc = args.fn(args, cfg, load_kinds()) or 0
+            if rc:
+                state = "failed"
+        except NeedsYes as ex:
+            rc, state, msg, doc = EXIT_NEEDS_YES, "failed", str(ex), _error_doc(ex.code, str(ex))
+            if as_json:
+                print(f"error: {ex}", file=sys.stderr)
+            else:
+                print(ex.text)
+        except ClimgError as ex:
+            rc, state, msg, doc = EXIT_FAIL, "failed", str(ex), _error_doc(ex.code, str(ex))
+            print(f"error: {ex}", file=sys.stderr)
+        except Cancelled:
+            rc, state, msg, doc = EXIT_CANCELLED, "cancelled", "cancelled", _error_doc("cancelled", "cancelled")
+            print("cancelled", file=sys.stderr)
+        except KeyboardInterrupt:
+            rc, state, msg, doc = EXIT_INTERRUPT, "cancelled", "interrupted", _error_doc("cancelled", "interrupted")
+            print("interrupted", file=sys.stderr)
+        except Exception as ex:
+            if not as_json:
+                raise
+            rc, state, msg = EXIT_FAIL, "failed", f"{type(ex).__name__}: {ex}"
+            doc = _error_doc("internal", msg)
+            print(f"error: {msg}", file=sys.stderr)
+        if doc is not None and as_json:
+            emit_json(doc)
+        if job:
+            job.finish(state, util.redact(doc if doc is not None else util.LAST_RESULT), msg)
+        return rc
+    finally:
+        if sys.stdin is not saved[1]:
+            sys.stdin.close()
+        sys.stdout, sys.stdin = saved[0], saved[1]
+        signal.signal(signal.SIGTERM, saved[2])
+        util.JSON_OUT = util.LOG_HOOK = util.PROGRESS_HOOK = None

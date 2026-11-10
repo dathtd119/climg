@@ -18,7 +18,7 @@ import urllib.parse
 import urllib.request
 
 from . import dockerx, template
-from .util import ClimgError, warn
+from .util import ClimgError, progress, warn
 
 APP_ROOT = "/root/.clab"                 # where the app container sees its workspace (mount destination)
 APP_FILE = APP_ROOT + "/ui/custom-nodes.json"
@@ -299,16 +299,25 @@ def sync_ops(cfg, kinds, images=None):
     return ops
 
 
-def after_build(cfg, kinds, tag):
-    """Hook for pull/add/build: upsert the template of a freshly built image; failures warn, never fail the build."""
+def after_build(cfg, kinds, tag, write=True):
+    """Hook for pull/add/build: upsert the template of a freshly built image; failures warn, never fail the build.
+    Returns {name, written, ...} for the JSON result (None when the image has no known kind). With write=False
+    (--no-nodetpl) nothing is written and the result names the template that would be."""
+    e = entry_for_tag(kinds, tag)
+    if not e:
+        return None
+    if not write:
+        print(f"node template {e['name']}: not written (--no-nodetpl)")
+        return {"name": e["name"], "written": False, "entry": e}
+    progress("template", None, f"writing node template {e['name']}")
     try:
-        e = entry_for_tag(kinds, tag)
-        if not e:
-            return
         changes, skipped, via = apply_ops(cfg, [("upsert", e)])
         if changes:
             print(f"node template {e['name']}: {changes[0][0]} (via {via})")
         elif not skipped:
             print(f"node template {e['name']}: up to date")
+        return {"name": e["name"], "written": bool(changes), "writer": via,
+                "action": changes[0][0] if changes else ("skipped" if skipped else "unchanged"), "entry": e}
     except ClimgError as ex:
         warn(f"node template for {tag} not written: {ex}; run `climg nodetpl sync` later")
+        return {"name": e["name"], "written": False, "entry": e, "error": str(ex)}

@@ -97,19 +97,19 @@ class Inventory:
         ref = ref.strip()
         if ref.startswith("#"):
             if not ref[1:].isdigit():
-                raise ClimgError(f"bad id reference {ref!r}")
+                raise ClimgError(f"bad id reference {ref!r}", "invalid_ref")
             n = int(ref[1:])
             hits = [r for r in self.labhub if r["id"] == n and r["section"] == "QEMU"]
             if not hits:
                 hits = [r for r in self.labhub if r["id"] == n]
             if not hits:
-                raise ClimgError(f"no LabHub entry with id {n} in the current index")
+                raise ClimgError(f"no LabHub entry with id {n} in the current index", "not_found")
             return hits[0]
         if ref.startswith("local:"):
             name = ref[6:]
             hits = [r for r in self.local if r["name"] == name]
             if not hits:
-                raise ClimgError(f"no local image {name!r}; see `climg search --source local`")
+                raise ClimgError(f"no local image {name!r}; see `climg search --source local`", "not_found")
             return hits[0]
         if ref.startswith("labhub:"):
             body = ref[7:]
@@ -118,10 +118,10 @@ class Inventory:
             if sha:
                 hits = [r for r in hits if (r["files"][0]["checksum"]["sha1"] if r["files"] else "").startswith(sha)]
             if not hits:
-                raise ClimgError(f"no LabHub entry {body!r} in the current index")
+                raise ClimgError(f"no LabHub entry {body!r} in the current index", "not_found")
             if len(hits) > 1:
                 raise ClimgError(f"{name!r} is duplicated in the index; add @<sha1 prefix>: "
-                                 + ", ".join(r["key"] for r in hits))
+                                 + ", ".join(r["key"] for r in hits), "invalid_ref")
             return hits[0]
         by_tag = self._by_tag(ref)
         if by_tag:
@@ -132,7 +132,7 @@ class Inventory:
         if k:
             recs = [r for r in self.all_records() if r["kind"] == k.name]
             if not recs:
-                raise ClimgError(f"kind {k.name} has no known image (index/local)")
+                raise ClimgError(f"kind {k.name} has no known image (index/local)", "not_found")
             return self._pick(recs)
         # bare LabHub / local name or "kind version"
         hits = [r for r in self.all_records() if r["name"] == ref]
@@ -145,7 +145,7 @@ class Inventory:
             if hits:
                 return self._pick(hits)
         raise ClimgError(f"cannot resolve {ref!r}: use labhub:<name>, local:<name>, #<id>, a kind alias "
-                         f"({', '.join(sorted({k.alias for k in self.kinds}))}) or a docker tag")
+                         f"({', '.join(sorted({k.alias for k in self.kinds}))}) or a docker tag", "not_found")
 
     def docker_record(self, tag):
         im = self.tags[tag]

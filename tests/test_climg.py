@@ -15,7 +15,7 @@ from climg.core import Inventory  # noqa: E402
 from climg.index import build_records, mirror_urls  # noqa: E402
 
 KINDS = load_kinds()
-CREDS = {"username": "admin", "password": "Admin@123"}
+CREDS = {"username": "admin", "password": "test-only-not-a-real-password"}
 
 
 def fake_index(entries):

@@ -14,9 +14,10 @@ import zipfile
 
 from . import dockerx, index as ix, registry
 from .catalog import PATCHES_DIR
-from .util import UA, ClimgError, free_bytes, gb, run
+from .util import UA, ClimgError, free_bytes, gb, progress, run
 
 MAX_STALLS = 8
+SLOT_POLL = 10   # seconds between build-slot attempts
 HTML_RE = re.compile(rb"<!doctype html|<html|<head>|<title>", re.I)
 
 
@@ -29,7 +30,9 @@ def acquire_lock(cfg, name, log, shared_wait=True):
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         log(f"another climg run holds {name}; waiting ...")
+        progress("wait", None, f"waiting for {name}")
         fcntl.flock(fh, fcntl.LOCK_EX)
+        progress("resume")
     return fh
 
 
@@ -43,13 +46,16 @@ def acquire_build_slot(cfg, log):
             try:
                 fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 log(f"build slot {i + 1}/{cfg.max_builds} acquired")
+                if announced:
+                    progress("resume")
                 return fh
             except BlockingIOError:
                 fh.close()
         if not announced:
             log(f"all {cfg.max_builds} build slots busy; waiting ...")
             announced = True
-        time.sleep(10)
+        progress("wait", None, f"all {cfg.max_builds} build slots busy")
+        time.sleep(SLOT_POLL)
 
 
 def disk_check(cfg, need_extra, log, label):
@@ -59,7 +65,7 @@ def disk_check(cfg, need_extra, log, label):
     log(f"disk {label}: free {gb(free)}, need {gb(need_extra)} + floor {gb(cfg.disk_floor)}")
     if free - need_extra < cfg.disk_floor:
         raise ClimgError(f"disk floor: {gb(free)} free, {gb(need_extra)} needed, floor {gb(cfg.disk_floor)} "
-                         f"({label})")
+                         f"({label})", "disk_floor")
 
 
 # ---------------------------------------------------------------- download
@@ -95,7 +101,7 @@ def download(cfg, idx, f, log):
     part = dest + ".part"
     urls = ix.mirror_urls(idx, f["path"], cfg.mirrors)
     if not urls:
-        raise ClimgError(f"no usable mirror in config mirrors={cfg.mirrors}")
+        raise ClimgError(f"no usable mirror in config mirrors={cfg.mirrors}", "download_failed")
     md5_fails = 0
     for url in urls:
         stalls, attempt = 0, 0
@@ -113,7 +119,7 @@ def download(cfg, idx, f, log):
                 try:
                     with urllib.request.urlopen(urllib.request.Request(url, headers=hdr), timeout=60) as r:
                         if "text/html" in (r.headers.get("Content-Type") or "").lower():
-                            raise ClimgError(f"mirror answered with an HTML page (quota/login page?): {url}")
+                            raise ClimgError(f"mirror answered with an HTML page (quota/login page?): {url}", "download_failed")
                         if have and r.status != 206:
                             log(f"server ignored Range (HTTP {r.status}); restarting from 0")
                             have = 0
@@ -126,6 +132,7 @@ def download(cfg, idx, f, log):
                                 out.write(buf)
                                 got += len(buf)
                                 pct = int(got * 100 / size)
+                                progress("download", min(pct, 100), f"{gb(got)} of {gb(size)}")
                                 if pct // 10 != last // 10:
                                     last = pct
                                     log(f"  {pct:3d}%  {gb(got)}  "
@@ -142,26 +149,30 @@ def download(cfg, idx, f, log):
                     continue
             if _looks_html(part):
                 os.remove(part)
-                raise ClimgError("downloaded file is an HTML page (quota/login/error page), not an image")
+                raise ClimgError("downloaded file is an HTML page (quota/login/error page), not an image",
+                                 "download_failed")
             ok, got_md5 = _hash_verify(part, f, log)
             if not ok:
                 log(f"checksum mismatch (md5 {got_md5} != {md5}); discarding")
                 os.remove(part)
                 md5_fails += 1
                 if md5_fails >= 2:
-                    raise ClimgError("checksum mismatch twice; the mirror's file differs from the index")
+                    raise ClimgError("checksum mismatch twice; the mirror's file differs from the index",
+                                     "download_failed")
                 continue
             os.rename(part, dest)
+            progress("download", 100, "download complete")
             log(f"checksums ok, cached at {dest}")
             return dest
         log(f"mirror gave up after {MAX_STALLS} stalled attempts: {url}")
-    raise ClimgError(f"download failed on every mirror ({', '.join(cfg.mirrors)})")
+    raise ClimgError(f"download failed on every mirror ({', '.join(cfg.mirrors)})", "download_failed")
 
 
 # ---------------------------------------------------------------- extract
 
 def extract(src, kind, dest_path, log, mode):
     """Place the disk image at dest_path: hard link/copy a plain file, stream one member out of an archive."""
+    progress("extract", None, f"preparing {os.path.basename(dest_path)}")
     if mode == "plain":
         try:
             os.link(src, dest_path)
@@ -189,17 +200,17 @@ def extract(src, kind, dest_path, log, mode):
                     with open(dest_path, "wb") as out:
                         shutil.copyfileobj(tf.extractfile(ti), out, 1 << 22)
                     if os.path.getsize(dest_path) != ti.size:
-                        raise ClimgError(f"extracted size {os.path.getsize(dest_path)} != {ti.size}")
+                        raise ClimgError(f"extracted size {os.path.getsize(dest_path)} != {ti.size}", "build_failed")
                     log(f"extracted {gb(ti.size)} -> {dest_path}")
                     return
-    raise ClimgError(f"no {'/'.join(kind.image_ext)} member found in {src}")
+    raise ClimgError(f"no {'/'.join(kind.image_ext)} member found in {src}", "build_failed")
 
 
 # ---------------------------------------------------------------- vrnetlab work copy
 
 def _need_vrnetlab(cfg):
     if not cfg.vrnetlab or not os.path.isdir(cfg.vrnetlab):
-        raise ClimgError(f"vrnetlab checkout not found (config 'vrnetlab': {cfg.vrnetlab!r})")
+        raise ClimgError(f"vrnetlab checkout not found (config 'vrnetlab': {cfg.vrnetlab!r})", "no_config")
     return cfg.vrnetlab
 
 
@@ -234,14 +245,14 @@ def apply_patches(kind, bdir, log, patches_dir=PATCHES_DIR):
     for name in kind.patches:
         path = os.path.join(patches_dir, name)
         if not os.path.isfile(path):
-            raise ClimgError(f"patch {name} for {kind.name} not found in {patches_dir}")
+            raise ClimgError(f"patch {name} for {kind.name} not found in {patches_dir}", "build_failed")
         with open(path, "rb") as f:
             digest = hashlib.sha256(f.read()).hexdigest()
         p = run(["patch", "-p1", "-F", "0", "--batch", "--no-backup-if-mismatch", "-i", path], log=log, cwd=bdir)
         if p.returncode != 0:
             tail = "\n".join((p.stdout or "").splitlines()[-15:])
             raise ClimgError(f"patch {name} (sha256 {digest[:12]}) does not apply to the vrnetlab checkout for "
-                             f"{kind.dir} (rc={p.returncode}); the upstream files changed? tail:\n{tail}")
+                             f"{kind.dir} (rc={p.returncode}); the upstream files changed? tail:\n{tail}", "build_failed")
         log(f"patch applied: {name} sha256 {digest}")
         applied.append({"name": name, "sha256": digest})
     return applied
@@ -278,7 +289,7 @@ def make_version(cfg, kind, target, log=None):
         shutil.rmtree(bdir, ignore_errors=True)
     m = re.search(r"^Version:[ \t]*(.*)$", p.stdout or "", re.M)
     if p.returncode != 0 or not m or not m.group(1).strip():
-        raise ClimgError(f"`make version-test IMAGE={target}` failed in {kind.dir}:\n{(p.stdout or '')[-500:]}")
+        raise ClimgError(f"`make version-test IMAGE={target}` failed in {kind.dir}:\n{(p.stdout or '')[-500:]}", "build_failed")
     return m.group(1).strip()
 
 
@@ -291,6 +302,26 @@ def expected_tag(cfg, kind, target, log=None):
 
 
 # ---------------------------------------------------------------- build
+
+def remove_build_containers(bdir, log):
+    """`docker rm -f` every container recorded in a cidfile of the work copy (makefile-install.include starts a
+    privileged `docker run --cidfile cidfile` container that outlives its killed `make`)."""
+    for root, _, files in os.walk(bdir):
+        for fn in files:
+            if not (fn == "cidfile" or fn.endswith((".cidfile", ".cid"))):
+                continue
+            try:
+                with open(os.path.join(root, fn)) as f:
+                    cid = f.read().strip()
+            except OSError:
+                continue
+            if cid:
+                log(f"removing build container {cid[:12]} (cidfile {fn})", echo=False)
+                try:
+                    run(["docker", "rm", "-f", cid], log=log)
+                except ClimgError as ex:
+                    log(f"could not remove container {cid[:12]}: {ex}", echo=False)
+
 
 def build_image(cfg, kind, target, src_path, mode, log, tag=None, key=None, force=False):
     """Build one image. src_path is a plain disk file (mode 'plain') or an archive ('archive').
@@ -307,13 +338,15 @@ def build_image(cfg, kind, target, src_path, mode, log, tag=None, key=None, forc
     repo, ver = dockerx.split_tag(final)
     build_ver = ver if repo == kind.repo else f"climgtmp{os.getpid()}"
     lock = acquire_lock(cfg, f"build-{re.sub(r'[^A-Za-z0-9]+', '_', final)}", log)
-    bdir = None
+    bdir = slot = None
+    ok = False
     t0 = time.time()
     try:
         if dockerx.inspect_tag(final) and not force:
             log(f"no-op: {final} became ready while waiting")
             return final
-        slot = acquire_build_slot(cfg, log)  # noqa: F841 (held until return)
+        slot = acquire_build_slot(cfg, log)   # held until the finally below
+        progress("extract", None, "preparing the build")
         disk_check(cfg, 2 * os.path.getsize(src_path) if mode == "plain" else 3 * os.path.getsize(src_path),
                    log, "before build")
         bdir, vdir = prepare_work_copy(cfg, kind, re.sub(r"[^\w.-]+", "_", final), log)
@@ -326,14 +359,15 @@ def build_image(cfg, kind, target, src_path, mode, log, tag=None, key=None, forc
         if build_ver != natural.rsplit(":", 1)[1]:
             cmd.append(f"VERSION={build_ver}")
         log(f"state: building ({' '.join(cmd)}, cwd={vdir})")
+        progress("build", None, "make " + mk["target"])
         p = run(cmd, log=log, cwd=vdir, env=_make_env(cfg, kind))
         if p.returncode != 0:
             tail = "\n".join((p.stdout or "").splitlines()[-25:])
-            raise ClimgError(f"make failed (rc={p.returncode}); tail:\n{tail}")
+            raise ClimgError(f"make failed (rc={p.returncode}); tail:\n{tail}", "build_failed")
         built = f"{kind.repo}:{build_ver}"
         img = dockerx.inspect_tag(built)
         if not img:
-            raise ClimgError(f"make succeeded but {built} is missing; see {log.path}")
+            raise ClimgError(f"make succeeded but {built} is missing; see {log.path}", "build_failed")
         if built != final:
             run(["docker", "tag", built, final], log=log, check=True)
             run(["docker", "rmi", built], log=log, check=True)   # only the temporary tag created by this build
@@ -341,10 +375,15 @@ def build_image(cfg, kind, target, src_path, mode, log, tag=None, key=None, forc
         log(f"state: ready  {final} id={img['Id'][:19]} size={gb(img['Size'])} in {int(time.time() - t0)} s")
         registry.record_build(cfg, final, {"key": key, "kind": kind.name, "target": target, "id": img["Id"],
                                            "patches": applied})
+        ok = True
         return final
     finally:
         if bdir and os.path.exists(bdir):
+            if not ok:
+                remove_build_containers(bdir, log)
             shutil.rmtree(bdir, ignore_errors=True)
+        if slot:
+            slot.close()
         lock.close()
 
 
@@ -382,4 +421,4 @@ def pull_labhub(cfg, inv, rec, log, force=False, tag=None):
 def docker_pull(ref, log):
     p = run(["docker", "pull", ref], log=log)
     if p.returncode != 0:
-        raise ClimgError(f"docker pull {ref} failed: {(p.stdout or '').strip()[-300:]}")
+        raise ClimgError(f"docker pull {ref} failed: {(p.stdout or '').strip()[-300:]}", "download_failed")
