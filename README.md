@@ -29,7 +29,7 @@ No sudo, pip or uv is needed.
 vrnetlab: ~/vrnetlab                               # vrnetlab checkout (read only)
 state_dir: ~/.local/share/climg                  # index cache, downloads, registry, locks, logs, results.jsonl
 extra_cache_dirs:                                # read-only caches laid out as <dir>/<md5>/<filename>
-  - /srv/images/cache                          
+  - /srv/images/cache
 images_dirs:                                     # hand-imported vendor images (default: <state>/images)
   - ~/.local/share/climg/images
 workspace: ~/.clab                                # containerlab workspace (written by init)
@@ -141,3 +141,10 @@ caps concurrent builds. `add --tag T` builds under `T` through a temporary tag t
 * Kinds marked `confirmed: false` in `kinds.yaml` are derived from the vrnetlab Makefiles but were never smoke-tested.
 * Huawei tags embed the positional LabHub id (`ne40e-lh266`); an image counts as built when any `<model>-*` tag exists.
 * Only QEMU and IOL index sections are used; DYNAMIPS has no containerlab path.
+
+## License
+
+MIT, see [LICENSE](LICENSE). `patches/cisco_vios-0001-pr548-bootstrap-stall.patch` is the unmodified diff of
+[srl-labs/vrnetlab#548](https://github.com/srl-labs/vrnetlab/pull/548) and stays under vrnetlab's MIT license.
+climg does not include or redistribute code from ishare2-cli (GPL-3.0); it only reads the public LabHub index format.
+Network OS images are not part of this project: obtain and use them under their vendors' license terms.
