@@ -26,15 +26,15 @@ No sudo, pip or uv is needed.
 `~/.config/climg/config.yaml` (override with `--config FILE` or `$CLIMG_CONFIG`). Unknown keys are rejected.
 
 ```yaml
-vrnetlab: /home/bds/containerlab/vrnetlab        # vrnetlab checkout (read only)
+vrnetlab: ~/vrnetlab                               # vrnetlab checkout (read only)
 state_dir: ~/.local/share/climg                  # index cache, downloads, registry, locks, logs, results.jsonl
 extra_cache_dirs:                                # read-only caches laid out as <dir>/<md5>/<filename>
-  - /home/bds/containerlab/ondemand/cache/src
+  - /srv/images/cache                          
 images_dirs:                                     # hand-imported vendor images (default: <state>/images)
   - ~/.local/share/climg/images
-workspace: /home/bds/.clab                       # containerlab workspace (written by init)
+workspace: ~/.clab                                # containerlab workspace (written by init)
 app_container: containerlab-app                  # running containerlab-app, if any
-nodetpl_file: /home/bds/.clab/ui/custom-nodes.json   # host path of the app's Node Template file; absent = REST only
+nodetpl_file: ~/.clab/ui/custom-nodes.json            # host path of the app's Node Template file; absent = REST only
 nodetpl_url: https://127.0.0.1:3001              # app base URL for the REST writer
 nodetpl_writer: auto                             # auto (REST if reachable, else file) | file | rest
 mirrors: [main, drive, legacy]                   # LabHub hostname keys in failover order ("secondary" redirects: skip)
@@ -44,7 +44,7 @@ index_ttl_hours: 168
 index_pinned_release: LabHub-Indexes-2.0.1
 index_fallback_files: []                         # offline copies of labhub.json
 credentials: {username: admin, password: <lab-default>}   # lab default login, used by template/test; set it in your own config
-lab_roots: [/home/bds/.clab]                       # default [workspace]; scanned by `climg lab` without arguments
+lab_roots: [~/.clab]                                # default [workspace]; scanned by `climg lab` without arguments
 ```
 
 ### Folder layout
