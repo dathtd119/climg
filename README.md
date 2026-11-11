@@ -102,6 +102,8 @@ copy only (the checkout is never touched); a missing or non-applying patch fails
 vIOS launcher). Drop the entry from `kinds.yaml` once upstream merges it. `climg pull REF --tag T` builds under a temporary
 tag first (e.g. to `climg test T` before replacing the real tag).
 
+`juniper_vjunosswitch` and `juniper_vjunosrouter` carry `<kind>-0001-lab-credentials.patch`: the launcher applies the lab `USERNAME`/`PASSWORD` (SHA-512 hashed) to the login user and root at boot instead of the hard-coded `admin` / `admin@123`; images built before it must be rebuilt once.
+
 ## Node Templates (containerlab-app node palette)
 
 After every successful `pull`, `add --build` or `build`, climg upserts one Node Template (`name, kind, image, icon,

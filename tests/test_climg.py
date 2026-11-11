@@ -796,6 +796,94 @@ class ScanTests(unittest.TestCase):
         self.assertIsNone(res["weird.qcow2"])
 
 
+class VjunosCredentialPatchTests(unittest.TestCase):
+    """The vJunos lab-credential patches apply to vrnetlab a21b24b and the patched launcher renders the lab login."""
+    VRNETLAB = os.environ.get("CLIMG_VRNETLAB", os.path.expanduser("~/code/vrnetlab"))
+    BASE = "a21b24bea0e470f2264d69e7eb2266b39f60738f"
+    PW = 'p@ss"w\\rd$1'
+
+    def tree(self, kind):
+        import shutil
+        import subprocess
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        sub = KINDS.get(kind).dir
+        try:
+            tar = subprocess.run(["git", "-C", self.VRNETLAB, "archive", self.BASE, sub], capture_output=True, check=True).stdout
+        except (OSError, subprocess.CalledProcessError):
+            self.skipTest(f"vrnetlab {self.BASE[:7]} not available at {self.VRNETLAB}")
+        subprocess.run(["tar", "-x", "-C", d], input=tar, check=True)
+        return d, os.path.join(d, sub, "docker")
+
+    def patch_path(self, kind):
+        names = KINDS.get(kind).patches
+        self.assertEqual(len(names), 1)
+        return os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "patches", names[0])
+
+    def render(self, docker, username, password):
+        import subprocess
+        script = (
+            "import sys, types, os\n"
+            "class VM:\n"
+            "    def __init__(s, *a, **k):\n"
+            "        import logging; s.logger = logging.getLogger(); s.mgmt_address_ipv4='10.0.0.2/24'; s.mgmt_gw_ipv4='10.0.0.1'\n"
+            "        s.mgmt_address_ipv6=''; s.mgmt_gw_ipv6=''; s.qemu_args=[]\n"
+            "    def render_optional_mgmt_config(s, *a, **k): return ''\n"
+            "class VR:\n"
+            "    def __init__(s, *a, **k): pass\n"
+            "m = types.ModuleType('vrnetlab'); m.VM = VM; m.VR = VR; m.find_disk_image = lambda: 'x'\n"
+            "sys.modules['vrnetlab'] = m\n"
+            "import passlib.hash\n"
+            "import subprocess; subprocess.run = lambda *a, **k: None\n"
+            "sys.argv = ['launch.py']\n"
+            "import launch\n"
+            "cls = [c for n, c in vars(launch).items() if n.endswith('_vm') and isinstance(c, type)][0]\n"
+            f"cls('r1', {username!r}, {password!r}, 'tc')\n"
+        )
+        return subprocess.run([sys.executable, "-c", script], cwd=docker, capture_output=True, text=True,
+                              env=dict(os.environ, PYTHONPATH=os.pathsep.join(filter(None, [docker, os.environ.get("PYTHONPATH")]))))
+
+    def check_kind(self, kind):
+        import subprocess
+        d, docker = self.tree(kind)
+        p = subprocess.run(["patch", "-p1", "-F", "0", "--dry-run", "--batch", "-i", self.patch_path(kind)],
+                           cwd=d, capture_output=True, text=True)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        subprocess.run(["patch", "-p1", "-F", "0", "--batch", "-i", self.patch_path(kind)], cwd=d, check=True,
+                       capture_output=True)
+        try:
+            import passlib  # noqa: F401
+        except ImportError:
+            self.skipTest("passlib not installed")
+        r = self.render(docker, "labuser", self.PW)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        conf = open(os.path.join(docker, "juniper.conf")).read()
+        self.assertIn("user labuser {", conf)
+        self.assertNotIn("admin@123", conf)
+        self.assertNotIn("user admin", conf)
+        self.assertEqual(conf.count('encrypted-password "$6$'), 2)
+        for leftover in ("{LOGIN_USER}", "{ROOT_AUTHENTICATION}", "{USER_AUTHENTICATION}"):
+            self.assertNotIn(leftover, conf)
+        from passlib.hash import sha512_crypt
+        hashes = [ln.split('"')[1] for ln in conf.splitlines() if "encrypted-password" in ln]
+        self.assertTrue(all(sha512_crypt.verify(self.PW, h) for h in hashes))
+        self.assertNotIn(self.PW, r.stdout + r.stderr)
+        # no credentials: today's defaults stay
+        os.remove(os.path.join(docker, "juniper.conf"))
+        self.assertEqual(self.render(docker, None, None).returncode, 0)
+        conf = open(os.path.join(docker, "juniper.conf")).read()
+        self.assertIn("user admin {", conf)
+        self.assertIn('plain-text-password-value "admin@123"', conf)
+        # unsafe user name is refused
+        self.assertNotEqual(self.render(docker, 'a"b', "x").returncode, 0)
+
+    def test_switch(self):
+        self.check_kind("juniper_vjunosswitch")
+
+    def test_router(self):
+        self.check_kind("juniper_vjunosrouter")
+
+
 if __name__ == "__main__":
     unittest.main()
 

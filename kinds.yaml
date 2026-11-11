@@ -68,6 +68,7 @@ kinds:
     vendor_files:
       - {re: '(?i)^vjunos-router-(?P<ver>.+)\.qcow2$'}
     example: vJunos-router-23.2R1.15.qcow2
+    patches: [juniper_vjunosrouter-0001-lab-credentials.patch]   # lab USERNAME/PASSWORD applied at boot (init.conf hard-codes admin@123)
     resources: {ram_mb: 5120, vcpu: 4}
     boot_budget_s: 1500
     confirmed: false
@@ -90,6 +91,7 @@ kinds:
     vendor_files:
       - {re: '(?i)^vjunos-switch-(?P<ver>.+)\.qcow2$'}
     example: vJunos-switch-23.2R1.14.qcow2
+    patches: [juniper_vjunosswitch-0001-lab-credentials.patch]   # lab USERNAME/PASSWORD applied at boot (init.conf hard-codes admin@123)
     resources: {ram_mb: 5120, vcpu: 4}
     boot_budget_s: 1500
     confirmed: false
