@@ -110,8 +110,7 @@ baseName, interfacePattern, setDefault:false, env QEMU_MEMORY/QEMU_SMP`; no cred
 `cisco-vios-159-3.m6`, `juniper-vsrx-24.4R1.9`, `huawei-ne40e-lh266`, `fortinet-fortigate-7.6.2`,
 `paloalto-pa-vm-11.2.5` (model token from the kind: `ui.model` in `kinds.yaml`, else the kind name after the vendor; Huawei
 model from the tag prefix). Icons come from `ui.icon` in `kinds.yaml` (names the UI supports: router, switch, leaf,
-spine, super-spine, dcgw, firewall, container, vm, server, client, controller, cloud, pon, rgw, ue). vrnetlab kinds use
-`eth{n}` as interface pattern. The browser needs a refresh to see changes.
+spine, super-spine, dcgw, firewall, container, vm, server, client, controller, cloud, pon, rgw, ue). `interfacePattern` is the vendor interface name containerlab maps to ethN (`ge-0/0/{n:0}`, `GigabitEthernet{n:2}`, ... per `ui.pattern` in `kinds.yaml`; `eth{n}` where containerlab has no alias). `nodetpl sync` moves untouched templates from the old `eth{n}` to it and keeps a pattern you set. The browser needs a refresh to see changes.
 
 Ownership: names created by climg are listed in `~/.local/share/climg/nodetpl-owned.json`; climg never modifies or
 deletes any other template (a clashing foreign name is skipped with a warning), and always re-reads right before writing

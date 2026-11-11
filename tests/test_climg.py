@@ -385,8 +385,29 @@ class NodeTemplateTests(unittest.TestCase):
                 self.assertEqual(e["baseName"], self.BASES[name])
                 self.assertEqual(e["image"], tag)
                 self.assertFalse(e["setDefault"])
-                self.assertEqual(e["interfacePattern"], "eth{n}")
+                self.assertEqual(e["interfacePattern"], self.PATTERNS.get(tag, "eth{n}"))
                 self.assertNotIn("credentials", e)
+
+    PATTERNS = {"vrnetlab/juniper_vsrx:24.4R1.9": "ge-0/0/{n:0}", "vrnetlab/cisco_csr1000v:17.03.08": "GigabitEthernet{n:2}",
+                "vrnetlab/cisco_c8000v:17.16.01a": "GigabitEthernet{n:2}", "vrnetlab/cisco_n9kv:9300-10.5.2.F": "Ethernet1/{n}",
+                "vrnetlab/cisco_xrv9k:24.3.1": "GigabitEthernet0/0/0/{n:0}", "vrnetlab/vr-fortios:7.6.2": "port{n:2}",
+                "vrnetlab/paloalto_pa-vm:11.2.5": "Ethernet1/{n}"}
+
+    def test_iol_pattern_skips_mgmt_port(self):
+        pat = nodetpl.entry_for_tag(KINDS, "vrnetlab/cisco_iol:17.12.1")["interfacePattern"].split(",")
+        self.assertEqual(pat[0], "Ethernet0/{n:1-3}")                       # Ethernet0/0 is mgmt
+        self.assertEqual(pat[1:], [f"Ethernet{i}/{{n:0-3}}" for i in range(1, 10)])
+
+    def test_unaliased_kinds_keep_eth(self):                                # no containerlab alias -> eth{n}
+        for tag in ("vrnetlab/huawei_vrp:ne40e-lh266", "vrnetlab/cisco_vios:159-3.m6"):
+            self.assertEqual(nodetpl.entry_for_tag(KINDS, tag)["interfacePattern"], "eth{n}", tag)
+
+    def test_ui_entry_uses_the_nodetpl_pattern(self):
+        for kn, tag, ver in (("juniper_vsrx", "vrnetlab/juniper_vsrx:24.4R1.9", "24.4R1.9"),
+                             ("cisco_iol", "vrnetlab/cisco_iol:17.12.1", "17.12.1"),
+                             ("huawei_vrp", "vrnetlab/huawei_vrp:ne40e-lh266", "ne40e-lh266")):
+            self.assertEqual(template.ui_entry(KINDS.get(kn), tag, ver)["interfacePattern"],
+                             nodetpl.entry_for_tag(KINDS, tag)["interfacePattern"], kn)
 
     def test_icons_and_env(self):
         self.assertEqual(nodetpl.entry_for_tag(KINDS, "vrnetlab/vr-fortios:7.6.2")["icon"], "firewall")
@@ -440,6 +461,31 @@ class KeepUserEditsTests(unittest.TestCase):
 
     def gen(self, tag=None, **over):
         return {**nodetpl.entry_for_tag(KINDS, tag or self.VSRX), **over}
+
+    def test_old_eth_pattern_migrates_with_and_without_baseline(self):
+        new = self.gen()
+        old = {**new, "interfacePattern": "eth{n}"}
+        for base in (old, None):
+            with self.subTest(base=base is not None):
+                out, ch, _ = self.up([old], new, base)
+                self.assertEqual(out[0]["interfacePattern"], "ge-0/0/{n:0}")
+                self.assertEqual(ch, [("updated", new["name"], [])])
+                self.assertFalse(nodetpl.is_customized(old, base, nodetpl.regen_for(KINDS)))
+
+    def test_user_pattern_kept_with_and_without_baseline(self):
+        new = self.gen()
+        old = {**new, "interfacePattern": "eth{n}"}
+        mine = {**old, "interfacePattern": "ge-0/0/{n:5}"}
+        for base in (old, None):
+            with self.subTest(base=base is not None):
+                out, ch, _ = self.up([mine], new, base)
+                self.assertEqual(out[0]["interfacePattern"], "ge-0/0/{n:5}")
+                self.assertEqual(ch, [])
+                self.assertTrue(nodetpl.is_customized(mine, base, nodetpl.regen_for(KINDS)))
+
+    def test_no_baseline_entry_equal_to_generated_is_unchanged(self):
+        new = self.gen()
+        self.assertEqual(self.up([new], new, None)[1], [])
 
     def up(self, cur, theirs, base, owned=True):
         return nodetpl.merge(cur, [("upsert", theirs)], {theirs["name"]} if owned else set(),

@@ -17,6 +17,11 @@ def node_env(kind):
     return env
 
 
+def interface_pattern(kind):
+    """interfacePattern of the Node Template (ui.pattern in kinds.yaml, else eth{n}); one source for nodetpl and --ui."""
+    return kind.ui.get("pattern", "eth{n}")
+
+
 def iface_lines(kind):
     p = kind.ports
     first = p["first"]
@@ -59,7 +64,7 @@ def render_topology(kind, tag, creds, ver, hint_ref):
 def ui_entry(kind, tag, ver):
     return {"name": f"{kind.human_name} {ver}", "kind": kind.name, "image": tag,
             "icon": kind.ui.get("icon", "pe"), "baseName": kind.alias.replace("_", ""),
-            "interfacePattern": kind.ports["data"].replace("{n}", "{n}"), "setDefault": False}
+            "interfacePattern": interface_pattern(kind), "setDefault": False}
 
 
 def merge_ui(path, entries):

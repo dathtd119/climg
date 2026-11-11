@@ -45,7 +45,7 @@ def build_entry(kind, tag):
     ver = tag.rsplit(":", 1)[1]
     base = ver.split("-", 1)[0].lower() if kind.family_match else kind.ui.get("base") or kind.alias.replace("_", "")
     e = {"name": tpl_name(kind, tag), "kind": kind.name, "image": tag, "icon": kind.ui.get("icon", "router"),
-         "baseName": base, "interfacePattern": kind.ui.get("pattern", "eth{n}"), "setDefault": False}
+         "baseName": base, "interfacePattern": template.interface_pattern(kind), "setDefault": False}
     env = template.node_env(kind)
     if env:
         e["env"] = env
@@ -90,6 +90,9 @@ def save_owned(cfg, names, generated=None):
     os.replace(tmp, cfg.nodetpl_owned_file)
 
 
+LEGACY_PATTERN = "eth{n}"    # interfacePattern of every template generated before vendor patterns existed
+
+
 def _strip(entry):
     """Entry without setDefault, which is always the user's."""
     return {k: v for k, v in entry.items() if k != "setDefault"}
@@ -105,9 +108,20 @@ def regen_for(kinds):
     return regen if kinds is not None else None
 
 
+def _reference(entry, base, regen):
+    """What climg generated for this entry last: the stored base, else the regenerated entry (an entry still on the old
+    default pattern counts as equal to the old generator output, which differed from today's only in that field)."""
+    if base is not None:
+        return base
+    ref = regen(entry) if regen else None
+    if ref is not None and entry.get("interfacePattern") == LEGACY_PATTERN:
+        ref = {**ref, "interfacePattern": LEGACY_PATTERN}
+    return ref
+
+
 def is_customized(entry, base, regen=None):
     """True when the user changed a managed entry: differs from its stored base, or (no base) from the regenerated one."""
-    ref = base if base is not None else (regen(entry) if regen else None)
+    ref = _reference(entry, base, regen)
     return ref is not None and _strip(entry) != _strip(ref)
 
 
@@ -122,6 +136,8 @@ def merge_entry(base, ours, theirs):
         o, t = ours.get(key, _MISSING), theirs.get(key, _MISSING)
         if base is None:
             user = o != _MISSING and o != t       # no baseline: missing fields are filled, differing ones are edits
+            if key == "interfacePattern" and o == LEGACY_PATTERN:
+                user = False                      # the old generated default is not an edit
         else:
             user = o != base.get(key, _MISSING)
         take = o if user else t
@@ -175,7 +191,7 @@ def merge(current, ops, owned, base=None, regen=None):
 
 
 def _edited(entry, base, regen):
-    ref = base if base is not None else (regen(entry) if regen else None)
+    ref = _reference(entry, base, regen)
     return ref is None or _strip(entry) != _strip(ref)     # unknown reference: be conservative
 
 
