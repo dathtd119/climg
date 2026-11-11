@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 .venv/
 *.part
+climg.egg-info/
+build/
+dist/

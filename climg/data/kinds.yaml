@@ -1,0 +1,402 @@
+# climg kinds - one block per containerlab kind that is built from a vrnetlab platform directory.
+#
+# Fields
+#   vendor / dir / repo     vrnetlab platform dir (relative to the checkout) and docker repository of the built image
+#   image_ext               extensions of the disk file vrnetlab expects (archives from LabHub are searched for one)
+#   target                  vrnetlab filename template; {ver} (+ any named group of the matching rule) is substituted
+#   version_rules           mirror of the platform Makefile VERSION sed: first fullmatch on the target filename wins,
+#                           `fmt` is a re.expand template. This is a prediction; `climg show`, `climg add` and every
+#                           build confirm it with `make version-test`.
+#   labhub                  rules over LabHub entry names (section QEMU unless `section: IOL`). LabHub disk filenames are
+#                           also tried against `vendor_files`, so e.g. nexus9300v64.10.4.2.F.qcow2 needs no extra rule. Named groups feed
+#                           `target`; `ver` (a format string over groups + {id}) overrides the `ver` group.
+#   vendor_files            rules over vendor-supplied file names (real vendor naming), same group semantics.
+#   make                    {target, args ({target} = filename), env}; default target docker-build, args [IMAGE={target}]
+#   family_match            when true, an image counts as built if the repo has any tag starting with `{family}-`
+#                           (huawei tags embed a LabHub id that changes between index releases)
+#   resources               ram_mb / vcpu rendered as QEMU_MEMORY / QEMU_SMP unless qemu_env is false
+#   ports                   interface naming: mgmt label, data pattern ({n}), first = number of eth1
+#   ui                      node template: pattern (interfacePattern the web app uses to name link endpoints; vendor name
+#                           that containerlab maps to ethN, `{n:S}` starts at S; default eth{n}), icon (UI icon name), base (baseName, default first alias), model (name token, default the kind name after the vendor)
+#   patches                 file names in patches/ applied with `patch -p1` to the build work copy (never the checkout);
+#                           a patch that does not apply fails the build; names + sha256 go to builds.json and the
+#                           image label `climg.patches`
+#   ssh_prompt / probe      used by `climg test` (regex of the CLI prompt; commands + regex of the version output)
+# Entries marked `confirmed: false` were derived from the vrnetlab Makefiles/launchers but never smoke-tested here.
+
+defaults:
+  ssh_prompt: '[\w.@()\-/:~<\[]*[#>$\]]'
+  probe: {pre: [], cmd: "show version", regex: "Version"}
+  qemu_env: true
+  confirmed: true
+  make: {target: docker-build, args: ["IMAGE={target}"], env: {}}
+
+kinds:
+  juniper_vsrx:
+    vendor: juniper
+    dir: juniper/vsrx
+    repo: vrnetlab/juniper_vsrx
+    aliases: [vsrx, vsrx3]
+    image_ext: [qcow2]
+    target: "junos-vsrx3-x86-64-{ver}.qcow2"
+    version_rules:
+      - {re: 'junos-vsrx3-x86-64-(.+)\.qcow2', fmt: '\1'}
+    labhub:
+      - {re: '^vsrx30-(?P<ver>\d+\.\d+R\d+(?:-S\d+)?(?:\.\d+)?)$'}
+      - {re: '^vsrxng-(?P<ver>\d+\.\d+R\d+(?:-S\d+)?(?:\.\d+)?)$'}
+    vendor_files:
+      - {re: '^junos-vsrx3?-x86-64-(?P<ver>.+)\.qcow2$'}
+    example: junos-vsrx3-x86-64-24.4R1.9.qcow2
+    resources: {ram_mb: 4096, vcpu: 2}
+    boot_budget_s: 1200
+    ssh_prompt: '\S+@\S+>'
+    probe: {pre: [], cmd: "show version | no-more", regex: 'Junos: \S+'}
+    ports: {mgmt: fxp0, data: "ge-0/0/{n}", first: 0}
+    ui: {icon: firewall, pattern: "ge-0/0/{n:0}"}
+
+  juniper_vjunosrouter:
+    vendor: juniper
+    dir: juniper/vjunosrouter
+    repo: vrnetlab/juniper_vjunos-router
+    aliases: [vjunos-router, vjunosrouter]
+    image_ext: [qcow2]
+    target: "vJunos-router-{ver}.qcow2"
+    version_rules:
+      - {re: '(?i)vjunos-router-(.+)\.qcow2', fmt: '\1'}
+    labhub:
+      - {re: '^vjunosrouter-(?P<ver>.+)$'}
+    vendor_files:
+      - {re: '(?i)^vjunos-router-(?P<ver>.+)\.qcow2$'}
+    example: vJunos-router-23.2R1.15.qcow2
+    patches: [juniper_vjunosrouter-0001-lab-credentials.patch]   # lab USERNAME/PASSWORD applied at boot (init.conf hard-codes admin@123)
+    resources: {ram_mb: 5120, vcpu: 4}
+    boot_budget_s: 1500
+    confirmed: false
+    ssh_prompt: '\S+@\S+>'
+    probe: {pre: [], cmd: "show version | no-more", regex: 'Junos: \S+'}
+    ports: {mgmt: fxp0, data: "ge-0/0/{n}", first: 0}
+    ui: {icon: router, pattern: "ge-0/0/{n:0}"}
+
+  juniper_vjunosswitch:
+    vendor: juniper
+    dir: juniper/vjunosswitch
+    repo: vrnetlab/juniper_vjunos-switch
+    aliases: [vjunos-switch, vjunosswitch]
+    image_ext: [qcow2]
+    target: "vJunos-switch-{ver}.qcow2"
+    version_rules:
+      - {re: '(?i)vjunos-switch-(.+)\.qcow2', fmt: '\1'}
+    labhub:
+      - {re: '^vjunosswitch-(?P<ver>.+)$'}
+    vendor_files:
+      - {re: '(?i)^vjunos-switch-(?P<ver>.+)\.qcow2$'}
+    example: vJunos-switch-23.2R1.14.qcow2
+    patches: [juniper_vjunosswitch-0001-lab-credentials.patch]   # lab USERNAME/PASSWORD applied at boot (init.conf hard-codes admin@123)
+    resources: {ram_mb: 5120, vcpu: 4}
+    boot_budget_s: 1500
+    confirmed: false
+    ssh_prompt: '\S+@\S+>'
+    probe: {pre: [], cmd: "show version | no-more", regex: 'Junos: \S+'}
+    ports: {mgmt: fxp0, data: "ge-0/0/{n}", first: 0}
+    ui: {icon: switch, pattern: "ge-0/0/{n:0}"}
+
+  cisco_csr1000v:
+    vendor: cisco
+    dir: cisco/csr1000v
+    repo: vrnetlab/cisco_csr1000v
+    aliases: [csr, csr1000v]
+    image_ext: [qcow2]
+    target: "csr1000v-universalk9.{ver}-serial.qcow2"
+    version_rules:
+      - {re: '.+[^0-9](\d+\.\d+\.\d+[sb]?)(?:[^0-9].*)?', fmt: '\1'}   # drops the trailing "a" of 17.03.08a
+    labhub:
+      - {re: '^csr1000v-(?P<a>\d+)-(?P<b>\d+)-(?P<c>\d+[a-z]?)$', ver: '{a}.{b}.{c}'}
+      - {re: '^csr1000vng-universalk9\.(?P<ver>\d+\.\d+\.\d+[a-z]?)-serial$'}
+    vendor_files:
+      - {re: '^csr1000v.*?[._-](?P<ver>\d+\.\d+\.\d+[a-z]?)(?:-serial)?\.qcow2$'}
+    example: csr1000v-universalk9.17.03.08a-serial.qcow2
+    resources: {ram_mb: 4096, vcpu: 1}
+    boot_budget_s: 1200
+    ssh_prompt: '[\w.\-]+[#>]'
+    probe: {pre: ["terminal length 0"], cmd: "show version", regex: 'Cisco IOS XE Software.*Version \S+'}
+    ports: {mgmt: GigabitEthernet1, data: "GigabitEthernet{n}", first: 2}
+    ui: {icon: router, pattern: "GigabitEthernet{n:2}"}
+
+  cisco_c8000v:
+    vendor: cisco
+    dir: cisco/c8000v
+    repo: vrnetlab/cisco_c8000v
+    aliases: [c8000v, c8kv]
+    image_ext: [qcow2]
+    target: "c8000v-{ver}.qcow2"
+    version_rules:
+      - {re: '.*[^0-9](\d+\.\d+\.\d+[a-z]?).*', fmt: '\1'}
+    labhub:
+      - {re: '^c8000v-(?P<ver>\d+\.\d+\.\d+[a-z]?)$'}
+    vendor_files:
+      - {re: '^c8000v.*?[._-](?P<ver>\d+\.\d+\.\d+[a-z]?)\.qcow2$'}
+    example: c8000v-universalk9_16G_serial.17.16.01a.qcow2
+    make: {target: docker-build, args: ["IMAGE={target}", "MODE=autonomous"], env: {}}   # plain make also builds controller/ztp variants
+    resources: {ram_mb: 4096, vcpu: 1}
+    boot_budget_s: 1200
+    ssh_prompt: '[\w.\-]+[#>]'
+    probe: {pre: ["terminal length 0"], cmd: "show version", regex: 'Cisco IOS XE Software.*Version \S+'}
+    ports: {mgmt: GigabitEthernet1, data: "GigabitEthernet{n}", first: 2}
+    ui: {icon: router, base: c8kv, pattern: "GigabitEthernet{n:2}"}
+
+  cisco_n9kv:
+    vendor: cisco
+    dir: cisco/n9kv
+    repo: vrnetlab/cisco_n9kv
+    aliases: [n9kv, nxosv9k, nexus9k]
+    image_ext: [qcow2]
+    target: "n9kv-{ver}.qcow2"
+    version_rules:
+      - {re: 'n9kv-(.*)\.qcow2', fmt: '\1'}
+    labhub:
+      - {re: '^nxosv9k-(?P<model>9\d{3})v-(?P<v>.+)$', ver: '{model}-{v}'}
+    vendor_files:
+      - {re: '^nexus9(?P<model>\d{3})v(?:64)?\.(?P<v>.+)\.qcow2$', ver: '9{model}-{v}'}
+    example: nexus9300v64.10.5.2.F.qcow2
+    resources: {ram_mb: 10240, vcpu: 4}
+    boot_budget_s: 1200
+    ssh_prompt: '[\w.\-]+#'
+    probe: {pre: [], cmd: "show version | no-more", regex: 'NXOS: version \S+'}
+    ports: {mgmt: mgmt0, data: "Ethernet1/{n}", first: 1}
+    ui: {icon: leaf, pattern: "Ethernet1/{n}"}
+
+  cisco_xrv9k:
+    vendor: cisco
+    dir: cisco/xrv9k
+    repo: vrnetlab/cisco_xrv9k
+    aliases: [xrv9k]
+    image_ext: [qcow2]
+    target: "xrv9k-fullk9-x-{ver}.qcow2"
+    version_rules:
+      - {re: '.+[^0-9](\d+\.\d+\.\d+(?:\.[0-9A-Z]+)?)(?:[^0-9].*)?', fmt: '\1'}
+    labhub:
+      - {re: '^xrv9k-fullk9-(?P<ver>\d+\.\d+\.\d+)$'}
+      - {re: '^iosxrv9000-(?P<a>\d+)-(?P<b>\d+)-(?P<c>\d+)$', ver: '{a}.{b}.{c}'}
+    vendor_files:
+      - {re: '^xrv9k-fullk9-x-(?P<ver>\d+\.\d+\.\d+(?:\.[0-9A-Z]+)?)\.qcow2$'}
+      - {re: '^xrv9k-.*?(?P<ver>\d+\.\d+\.\d+(?:\.[0-9A-Z]+)?)\.qcow2$'}
+    example: xrv9k-fullk9-x-24.3.1.qcow2
+    resources: {ram_mb: 16384, vcpu: 4}
+    env: {QEMU_MEMORY: "16384"}
+    boot_budget_s: 2700
+    ssh_prompt: 'RP/\S+#'
+    probe: {pre: ["terminal length 0"], cmd: "show version", regex: 'Cisco IOS XR Software.*Version \S+'}
+    ports: {mgmt: "MgmtEth0/RP0/CPU0/0", data: "GigabitEthernet0/0/0/{n}", first: 0}
+    ui: {icon: router, pattern: "GigabitEthernet0/0/0/{n:0}"}
+
+  cisco_vios:
+    vendor: cisco
+    dir: cisco/vios
+    repo: vrnetlab/cisco_vios
+    aliases: [vios, iosv, viosl2]
+    image_ext: [qcow2]
+    target: "cisco_vios-{ver}.qcow2"
+    version_rules:
+      - {re: 'cisco_vios-(.*)\.qcow2', fmt: '\1'}
+      - {re: 'cisco_viosl2-(.*)\.qcow2', fmt: 'L2-\1'}
+      - {re: 'vios_l2-.*_([0-9]{8})\.qcow2', fmt: 'L2-\1'}
+    labhub:
+      - {re: '^viosl2-adventerprisek9-m\.ssa\.high_iron_(?P<ver>\d{8})$', target: 'vios_l2-adventerprisek9-m.ssa.high_iron_{ver}.qcow2'}
+      - {re: '^viosl2-(?P<ver>\d+\.\d+\.\d+[a-z]?)$', target: 'cisco_viosl2-{ver}.qcow2'}
+      - {re: '^vios-adventerprisek9-m\.spa\.(?P<ver>\d+-\d+\.m\d+)$', flags: i}
+      - {re: '^iosv-(?P<a>\d+-\d+)-(?P<b>m\d+)$', ver: '{a}.{b}'}
+    vendor_files:
+      - {re: '^cisco_viosl2-(?P<ver>.+)\.qcow2$', target: 'cisco_viosl2-{ver}.qcow2'}
+      - {re: '^vios_l2-.*_(?P<ver>\d{8})\.qcow2$', target: 'vios_l2-adventerprisek9-m.ssa.high_iron_{ver}.qcow2'}
+      - {re: '^cisco_vios-(?P<ver>.+)\.qcow2$'}
+      - {re: '^vios-adventerprisek9-m\.spa\.(?P<ver>\d+-\d+\.m\d+)\.qcow2$', flags: i}
+    example: cisco_vios-159-3.M2.qcow2
+    patches: [cisco_vios-0001-pr548-bootstrap-stall.patch]   # first-boot hang, srl-labs/vrnetlab#547 / PR #548
+    qemu_env: false   # launcher fixes RAM at 512 MB (router) / 768 MB (switch), 1 vCPU
+    resources: {ram_mb: 512, vcpu: 1}
+    boot_budget_s: 600
+    ssh_prompt: '[\w.\-]+[#>]'
+    probe: {pre: ["terminal length 0"], cmd: "show version", regex: 'Cisco IOS Software.*Version \S+'}
+    ports: {mgmt: GigabitEthernet0/0, data: "GigabitEthernet0/{n}", first: 1}
+    ui: {icon: router}
+
+  cisco_asav:
+    vendor: cisco
+    dir: cisco/asav
+    repo: vrnetlab/cisco_asav
+    aliases: [asav]
+    image_ext: [qcow2]
+    target: "asav{ver}.qcow2"
+    version_rules:
+      - {re: '.*asav([0-9].*)\.qcow2', fmt: '\1'}
+    labhub:
+      - {re: '^asav-?(?P<ver>\d[\d.\-]*\d)$'}
+    vendor_files:
+      - {re: '^asav(?P<ver>\d[\d.\-]*\d)\.qcow2$'}
+    example: asav9-20-2-2.qcow2
+    resources: {ram_mb: 2048, vcpu: 1}
+    boot_budget_s: 900
+    confirmed: false
+    ssh_prompt: '[\w.\-]+[#>]'
+    probe: {pre: ["terminal pager 0"], cmd: "show version", regex: 'Cisco Adaptive Security Appliance Software Version \S+'}
+    ports: {mgmt: Management0/0, data: "GigabitEthernet0/{n}", first: 0}
+    ui: {icon: firewall, pattern: "GigabitEthernet0/{n:0}"}
+
+  cisco_cat9kv:
+    vendor: cisco
+    dir: cisco/cat9kv
+    repo: vrnetlab/cisco_cat9kv
+    aliases: [cat9kv, cat9000v]
+    image_ext: [qcow2]
+    target: "cat9kv-prd-{ver}.qcow2"
+    version_rules:
+      - {re: '.*[^0-9](\d+\.\d+\.\d+[a-z0-9]*).*', fmt: '\1'}
+    labhub:
+      - {re: '^cat9kv-(?P<ver>\d+\.\d+\.\d+)$'}
+    vendor_files:
+      - {re: '^cat9kv.*?[._-](?P<ver>\d+\.\d+\.\d+[a-z0-9]*)\.qcow2$'}
+    example: cat9kv-prd-17.12.01.qcow2
+    resources: {ram_mb: 8192, vcpu: 4}
+    boot_budget_s: 1500
+    confirmed: false
+    ssh_prompt: '[\w.\-]+[#>]'
+    probe: {pre: ["terminal length 0"], cmd: "show version", regex: 'Cisco IOS XE Software.*Version \S+'}
+    ports: {mgmt: GigabitEthernet0/0, data: "GigabitEthernet1/0/{n}", first: 1}
+    ui: {icon: switch, pattern: "GigabitEthernet1/0/{n}"}
+
+  cisco_iol:
+    vendor: cisco
+    dir: cisco/iol
+    repo: vrnetlab/cisco_iol
+    aliases: [iol]
+    image_ext: [bin]
+    target: "cisco_iol-{ver}.bin"
+    version_rules:
+      - {re: 'cisco_iol-(.*)\.bin', fmt: '\1'}
+    labhub:
+      - {re: '^(?:i86bi_Linux-)?(?P<lvl>L[23])-(?P<rest>.+?)(?:\.bin)?$', ver: '{lvl}-{rest}', section: IOL, flags: i}
+    vendor_files:
+      - {re: '^cisco_iol-(?P<ver>.+)\.bin$'}
+      - {re: '^i86bi_Linux-(?P<lvl>L[23])-(?P<rest>.+?)\.bin$', ver: '{lvl}-{rest}', flags: i}
+    example: cisco_iol-L3-17.12.01.bin
+    qemu_env: false   # IOL is a native process, not a QEMU VM
+    resources: {ram_mb: 512, vcpu: 1}
+    boot_budget_s: 300
+    confirmed: false
+    ssh_prompt: '[\w.\-]+[#>]'
+    probe: {pre: ["terminal length 0"], cmd: "show version", regex: 'Cisco IOS Software.*Version \S+'}
+    ports: {mgmt: Ethernet0/0, data: "Ethernet0/{n}", first: 1}
+    ui: {icon: router, pattern: "Ethernet0/{n:1-3},Ethernet1/{n:0-3},Ethernet2/{n:0-3},Ethernet3/{n:0-3},Ethernet4/{n:0-3},Ethernet5/{n:0-3},Ethernet6/{n:0-3},Ethernet7/{n:0-3},Ethernet8/{n:0-3},Ethernet9/{n:0-3}"}
+
+  arista_veos:
+    vendor: arista
+    dir: arista/veos
+    repo: vrnetlab/arista_veos
+    aliases: [veos, eos]
+    image_ext: [vmdk]
+    target: "vEOS64-lab-{ver}.vmdk"
+    version_rules:
+      - {re: '.*-([0-9]\.(?:[0-9]+\.){1,2}[0-9]{1,2}(?:[A-Z]|-EFT[0-9]))\.vmdk', fmt: '\1'}
+    labhub:
+      - {re: '^veos-(?P<ver>\d\.\d+\.\d+(?:\.\d+)?[A-Z])$'}
+    vendor_files:
+      - {re: '(?i)^veos(?:64)?-lab-(?P<ver>.+)\.vmdk$', target: 'vEOS64-lab-{ver}.vmdk'}
+    example: vEOS64-lab-4.32.1F.vmdk
+    resources: {ram_mb: 2048, vcpu: 2}
+    boot_budget_s: 900
+    confirmed: false
+    ssh_prompt: '[\w.\-]+[#>]'
+    probe: {pre: ["terminal length 0"], cmd: "show version", regex: 'Software image version: \S+'}
+    ports: {mgmt: Management1, data: "Ethernet{n}", first: 1}
+    ui: {icon: leaf, pattern: "Ethernet1/{n}"}
+
+  nokia_sros:
+    vendor: nokia
+    dir: nokia/sros
+    repo: vrnetlab/nokia_sros
+    aliases: [sros, timos]
+    image_ext: [qcow2]
+    target: "sros-vm-{ver}.qcow2"
+    version_rules:
+      - {re: '(magc-)?.+[^0-9](\d+\.\d+\.[A-Z]\d+(?:-\d+)?)[^0-9].*', fmt: '\1\2'}
+    labhub:
+      - {re: '^timos(?:-ng)?-(?P<ver>\d+\.\d+\.R\d+)$'}
+    vendor_files:
+      - {re: '^sros-vm-(?P<ver>.+)\.qcow2$'}
+    example: sros-vm-24.10.R1.qcow2
+    resources: {ram_mb: 4096, vcpu: 2}
+    boot_budget_s: 900
+    confirmed: false   # needs a SR OS license file at deploy time
+    ssh_prompt: '\S*[#>$]'
+    probe: {pre: [], cmd: "show version", regex: 'TiMOS-\S+'}
+    ports: {mgmt: "Management", data: "1/1/{n}", first: 1}
+    ui: {icon: router, pattern: "1/1/{n}"}
+
+  huawei_vrp:
+    vendor: huawei
+    dir: huawei/huawei_vrp
+    repo: vrnetlab/huawei_vrp
+    aliases: [vrp, huawei]
+    family_match: true
+    image_ext: [qcow2]
+    target: "huawei_{model}-{ver}.qcow2"
+    version_rules:
+      - {re: 'huawei_(ne40e|ce12800)-(.*)\.qcow2', fmt: '\1-\2'}
+    labhub:
+      - {re: '^(?P<model>ne40e|ce12800)$', ver: 'lh{id}'}   # LabHub ids are positional: tag follows the pinned index
+    vendor_files:
+      - {re: '^huawei_(?P<model>ne40e|ce12800)-(?P<ver>.+)\.qcow2$'}
+    example: huawei_ne40e-lh266.qcow2
+    resources: {ram_mb: 4096, vcpu: 4}
+    boot_budget_s: 900
+    ssh_prompt: '[<\[][\w.\-~]+[>\]]'
+    probe: {pre: ["screen-length 0 temporary"], cmd: "display version", regex: 'VRP \(R\) software.*'}
+    ports: {mgmt: "MEth0/0/0", data: "Ethernet1/0/{n}", first: 0}   # ce12800 uses GE1/0/{n}
+    ui: {icon: router}
+
+  fortinet_fortigate:
+    vendor: fortinet
+    dir: fortinet/fortigate
+    vendor_common: fortinet/common
+    repo: vrnetlab/vr-fortios
+    aliases: [fortigate, fgt, fortios]
+    image_ext: [qcow2]
+    target: "fortios-v{ver}.qcow2"
+    version_rules:
+      - {re: 'fortios-v(.*)\.qcow2', fmt: '\1'}
+    labhub:
+      - {re: '^fortinet-FGT-[vV](?P<ver>\d+\.\d+(?:\.\d+)?)'}
+      - {re: '^fortinet-FGT-[vV](?P<a>\d+)-(?P<b>\d+)-build', ver: '{a}.{b}'}
+    vendor_files:
+      - {re: '^FGT_VM64_KVM-v(?P<ver>\d+\.\d+\.\d+)[.\w]*-build\d+.*\.qcow2$'}
+      - {re: '^fortios-v(?P<ver>.+)\.qcow2$'}
+    example: FGT_VM64_KVM-v7.6.2.F-build3462-FORTINET.out.kvm.qcow2
+    make: {target: docker-build-fortigate, args: [], env: {}}   # the Makefile finds the single *.qcow2 itself
+    qemu_env: false
+    resources: {ram_mb: 2048, vcpu: 1}
+    boot_budget_s: 600
+    ssh_prompt: '[\w.\-]+ [#$]'
+    probe: {pre: [], cmd: "get system status", regex: 'Version: \S+ v\S+'}
+    ports: {mgmt: port1, data: "port{n}", first: 2}
+    ui: {icon: firewall, base: fgt, pattern: "port{n:2}"}
+
+  paloalto_panos:
+    vendor: paloalto
+    dir: paloalto/pan
+    repo: vrnetlab/paloalto_pa-vm
+    aliases: [pan, panos, pa-vm]
+    image_ext: [qcow2]
+    target: "PA-VM-KVM-{ver}.qcow2"
+    version_rules:
+      - {re: 'PA-(?:VM|VNM)-KVM-(.*)\.qcow2', fmt: '\1'}
+    labhub:
+      - {re: '^paloalto-(?P<ver>\d+\.\d+\.\d+(?:-h\d+)?)$'}
+    vendor_files:
+      - {re: '^PA-VM-KVM-(?P<ver>.+)\.qcow2$'}
+    example: PA-VM-KVM-11.2.5.qcow2
+    resources: {ram_mb: 6144, vcpu: 2}
+    boot_budget_s: 1500
+    ssh_prompt: '\S+@\S+[>#]'
+    probe: {pre: ["set cli pager off"], cmd: "show system info", regex: 'sw-version: \S+'}
+    ports: {mgmt: management, data: "ethernet1/{n}", first: 1}
+    ui: {icon: firewall, model: pa-vm, pattern: "Ethernet1/{n}"}

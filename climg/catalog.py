@@ -7,11 +7,13 @@ import yaml
 
 from .util import ClimgError
 
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-KINDS_FILE = os.path.join(ROOT_DIR, "kinds.yaml")
+# Bundled data lives inside the package (climg/data/), so a checkout and a pip/pipx install resolve it the same way.
+# The repo-root kinds.yaml, vendors.yaml and patches/ are symlinks to these (plain-copy deployments keep working).
+DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+KINDS_FILE = os.path.join(DATA_DIR, "kinds.yaml")
 VENDORS_FILE = "vendors.yaml"     # next to the kinds file
 OTHER = "Other"
-PATCHES_DIR = os.path.join(ROOT_DIR, "patches")
+PATCHES_DIR = os.path.join(DATA_DIR, "patches")
 
 
 class Kind:

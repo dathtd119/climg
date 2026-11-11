@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "climg"
+dynamic = ["version"]
+description = "containerlab image manager: find, build and register network-OS images"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = ["PyYAML"]
+
+[project.optional-dependencies]
+test = ["pexpect"]
+
+[project.urls]
+Homepage = "https://github.com/dathtd119/climg"
+
+[project.scripts]
+climg = "climg.cli:main"
+
+[tool.setuptools]
+packages = ["climg"]
+
+[tool.setuptools.dynamic]
+version = { attr = "climg.__version__" }
+
+[tool.setuptools.package-data]
+climg = ["data/*.yaml", "data/patches/*.patch"]
