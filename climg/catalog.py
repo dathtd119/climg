@@ -9,6 +9,8 @@ from .util import ClimgError
 
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 KINDS_FILE = os.path.join(ROOT_DIR, "kinds.yaml")
+VENDORS_FILE = "vendors.yaml"     # next to the kinds file
+OTHER = "Other"
 PATCHES_DIR = os.path.join(ROOT_DIR, "patches")
 
 
@@ -111,10 +113,32 @@ class Kinds:
         for name, d in raw["kinds"].items():
             merged = {**base, **d}
             self.kinds[name] = Kind(name, merged)
+        self._load_vendors(os.path.join(os.path.dirname(os.path.abspath(path)), VENDORS_FILE))
         self.by_alias = {}
         for k in self.kinds.values():
             for a in k.aliases + [k.name]:
                 self.by_alias[a.lower()] = k
+
+    def _load_vendors(self, path):
+        try:
+            with open(path) as f:
+                raw = yaml.safe_load(f) or {}
+        except OSError:
+            raw = {}
+        self.vendor_display = dict(raw.get("display") or {})
+        rules = lambda key: [(re.compile(r["re"], re.I), r["vendor"]) for r in raw.get(key) or []]
+        self._vendor_folders, self._vendor_names = rules("folders"), rules("names")
+
+    def vendor_of(self, kind=None, folder=None, name=None):
+        """Display vendor: the kind's when buildable, else the first folder rule, then name rule, else `Other`."""
+        k = self.get(kind) if kind else None
+        if k:
+            return self.vendor_display.get(k.vendor, k.vendor.capitalize())
+        for rules, text in ((self._vendor_folders, folder), (self._vendor_names, name)):
+            for rx, vendor in rules:
+                if text and rx.search(text):
+                    return vendor
+        return OTHER
 
     def __iter__(self):
         return iter(self.kinds.values())

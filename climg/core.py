@@ -21,6 +21,10 @@ class Inventory:
                     raise
                 print(f"warning: LabHub index unavailable ({ex}); continuing without it")
         self.local = registry.discover(cfg, kinds)
+        for r in self.local:     # registered entries written by older versions carry no vendor/folder/model
+            r["vendor"] = kinds.vendor_of(r.get("kind"), None, r["name"])
+            r.setdefault("folder", None)
+            r.setdefault("model", None)
         self.builds = registry.load_builds(cfg)
         try:
             self.images = dockerx.list_images()

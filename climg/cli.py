@@ -69,21 +69,35 @@ def cmd_index(args, cfg, kinds):
             "schema_version": idx.get("schema_version"), "file": cfg.index_file, "source": meta.get("source"),
             "counts": {s: len(idx.get(s, [])) for s in ("QEMU", "IOL", "DYNAMIPS")},
             "buildable": sum(1 for r in recs if r["kind"]), "mirrors": cfg.mirrors}
+    vendors = {}
+    for r in recs:
+        v = vendors.setdefault(r["vendor"], {"vendor": r["vendor"], "entries": 0, "buildable": 0})
+        v["entries"] += 1
+        v["buildable"] += 1 if r["kind"] else 0
+    info["vendors"] = sorted(vendors.values(), key=lambda v: v["vendor"].lower())
     if args.json:
         return emit_json(info)
     print(f"release      {info['release']}  (index last_update {info['last_update']})")
     print(f"cached       {info['file']}  age {info['age']}  ttl {cfg.index_ttl / 3600:.0f}h")
     print("entries      " + "  ".join(f"{k}={v}" for k, v in info["counts"].items()) +
-          "  (DYNAMIPS ignored: no containerlab path)")
+          "")
     print(f"buildable    {info['buildable']} entries map to a climg kind")
+    print(f"vendors      {len(info['vendors'])} (see `climg index --json`; filter with `search --all --vendor V`)")
     print(f"mirrors      {', '.join(cfg.mirrors)}")
 
 
 # ------------------------------------------------------------------ search
 
 def _match_kw(rec, kw):
-    text = " ".join(str(rec.get(k) or "") for k in ("name", "key", "kind", "version", "tag")).lower()
+    text = " ".join(str(rec.get(k) or "") for k in ("name", "key", "kind", "version", "tag", "vendor", "folder")).lower()
     return all(w in text for w in kw.lower().split())
+
+
+def _vendor_match(rec, kinds, wanted):
+    """Case-insensitive match on the record's display vendor, or on the raw vendor of its kind (`paloalto`)."""
+    w = wanted.strip().lower()
+    k = kinds.get(rec["kind"]) if rec.get("kind") else None
+    return w == (rec.get("vendor") or "").lower() or bool(k and w == k.vendor.lower())
 
 
 def cmd_search(args, cfg, kinds):
@@ -100,7 +114,7 @@ def cmd_search(args, cfg, kinds):
             continue
         if kind_filter and r["kind"] != kind_filter:
             continue
-        if args.vendor and not (r["kind"] and kinds.get(r["kind"]).vendor == args.vendor.lower()):
+        if args.vendor and not _vendor_match(r, kinds, args.vendor):
             continue
         if args.kw and not _match_kw(r, " ".join(args.kw)):
             continue

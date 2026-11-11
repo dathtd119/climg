@@ -73,8 +73,8 @@ Refs accepted by `show/pull/template/test`: `labhub:<name>[@sha1prefix]`, `local
 
 | Command | Purpose | Example |
 |---|---|---|
-| `index [--refresh]` | fetch/show the cached LabHub index (release, age, counts) with mirror failover | `climg index --refresh` |
-| `search [kw] [--kind K] [--vendor V] [--source labhub\|local\|all] [--status built\|cached\|available] [--all]` | table KEY/KIND/VERSION/SIZE/STATUS/SOURCE + next-command hint; no-kind entries need `--all` | `climg search vios --status available` |
+| `index [--refresh]` | fetch/show the cached LabHub index (release, age, counts; `--json` adds `vendors`: `[{vendor, entries, buildable}]`) with mirror failover | `climg index --refresh` |
+| `search [kw] [--kind K] [--vendor V] [--source labhub\|local\|all] [--status built\|cached\|available] [--all]` | table KEY/KIND/VERSION/SIZE/STATUS/SOURCE + next-command hint; no-kind entries need `--all`; `--vendor` matches the record's vendor without case (or a kind's raw vendor, e.g. `paloalto`) | `climg search vios --status available` |
 | `show <ref>` | files, checksums, kind, vrnetlab dir, target filename, predicted vs `make version-test` tag, status, template snippet | `climg show vsrx` |
 | `images` | `docker image ls` joined with the registry; vrnetlab images detected by author label + `uv run /launch.py` entrypoint; dangling ones flagged (never deleted) | `climg images` |
 | `lab <file\|dir>... [--pull --yes]` | parse `.clab.yml/.yaml` (node > group > kinds > defaults), classify every image: BUILT, BUILDABLE-CACHED, PULLABLE, VENDOR-FILE, REGISTRY, MISSING (with a hint); `--pull` builds the missing buildable ones. Exit 1 if anything is MISSING | `climg lab ~/containerlab/labs/templates` |
@@ -173,11 +173,15 @@ climg never modifies the vrnetlab checkout, never executes anything shipped insi
 images (`images` only reports dangling ones), builds only after `--yes`, keeps the free disk above `disk_floor_gb`, and
 caps concurrent builds. `add --tag T` builds under `T` through a temporary tag that it removes again.
 
+Every record in `search --json` carries `vendor` (never empty: from the kind when buildable, else from the LabHub folder
+and entry name via the ordered rules in `vendors.yaml`, `Other` as last resort), `folder` (LabHub path under the section,
+e.g. `H3C/vSR`, `iol/bin`, `dynamips`; null for local files) and `model` (sub-folder, e.g. `vSR`, else null).
+
 ## Known limits
 
 * Kinds marked `confirmed: false` in `kinds.yaml` are derived from the vrnetlab Makefiles but were never smoke-tested.
 * Huawei tags embed the positional LabHub id (`ne40e-lh266`); an image counts as built when any `<model>-*` tag exists.
-* Only QEMU and IOL index sections are used; DYNAMIPS has no containerlab path.
+* DYNAMIPS entries are listed (`search --all`) but never buildable: there is no containerlab path for them.
 
 ## License
 

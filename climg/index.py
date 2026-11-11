@@ -114,10 +114,23 @@ def pick_source_file(entry, kind):
     return None, None
 
 
+def entry_location(section, entry):
+    """(folder, model) of a LabHub entry from its first file path: `/addons/qemu/H3C/vSR/x.tgz` -> (`H3C/vSR`, `vSR`).
+    QEMU folders are relative to `qemu`; IOL/DYNAMIPS keep the section folder (`iol/bin`, `dynamips`) and have no model."""
+    if not entry["files"]:
+        return None, None
+    parts = [p for p in urllib.parse.unquote(entry["files"][0]["path"]).split("/") if p][1:-1]   # drop `addons`, file
+    if section == "QEMU" and parts and parts[0].lower() == "qemu":
+        parts = parts[1:]
+        return ("/".join(parts) or None), (parts[1] if len(parts) > 1 else None)
+    return ("/".join(parts) or None), None
+
+
 def build_records(idx, kinds):
-    """Normalised records for every QEMU/IOL entry. kind is None when nothing buildable matches."""
+    """Normalised records for every entry of every section (QEMU, IOL, DYNAMIPS...). kind is None when nothing
+    buildable matches; vendor/folder/model are always set (see vendors.yaml)."""
     recs = []
-    for section in ("QEMU", "IOL"):
+    for section in ("QEMU", "IOL", "DYNAMIPS"):
         for e in idx.get(section, []):
             fnames = [f["filename"] for f in e["files"]]
             hit = kinds.infer_labhub(e["name"], section, e["id"], fnames)
@@ -126,6 +139,7 @@ def build_records(idx, kinds):
                    "target": hit["target"] if hit else None, "files": e["files"],
                    "size": e["metadata"].get("total_size"), "sha1": None, "file": None, "file_mode": None,
                    "family": hit["groups"].get("model") if hit else None, "tag": None}
+            rec["folder"], rec["model"] = entry_location(section, e)
             if hit:
                 k = kinds.get(hit["kind"])
                 f, mode = pick_source_file(e, k)
@@ -136,6 +150,7 @@ def build_records(idx, kinds):
                 rec["tag"] = k.tag_for(hit["target"])
                 if f is None:
                     rec["kind"] = None   # no disk file we can use
+            rec["vendor"] = kinds.vendor_of(rec["kind"], rec["folder"], e["name"])
             recs.append(rec)
     # stable key: labhub:<name>, disambiguated by sha1 prefix when the name is duplicated
     seen = {}

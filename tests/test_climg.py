@@ -119,6 +119,45 @@ class LabhubInference(unittest.TestCase):
         self.assertEqual(sum(1 for k in recs if k.startswith("labhub:dup@")), 2)
         self.assertEqual(recs["labhub:vsrx30-24.4R1.9"]["file_mode"], "archive")
 
+    def test_vendor_folder_model(self):
+        def at(i, name, path, section="QEMU"):
+            e = entry(i, name, [("x.tgz", 1)])
+            e["files"][0]["path"] = path
+            return e
+        idx = fake_index([
+            at(1, "h3cvsr1k-7.1.064-R1362P12", "/addons/qemu/H3C/vSR/h3cvsr1k-7.1.064-R1362P12.tgz"),
+            at(2, "h3cvswitch_S9850-7.1.070-R7639P06", "/addons/qemu/H3C/vSW/h3cvswitch_S9850-7.1.070-R7639P06.tgz"),
+            at(3, "veos-4.33.1.1F", "/addons/qemu/Arista%20vEOS/veos-4.33.1.1F.tgz"),
+            at(4, "asav-9-20-2", "/addons/qemu/asav-9-20-2/virtioa.qcow2"),
+            at(5, "mystery-1", "/addons/qemu/mystery-1/virtioa.qcow2"),
+            at(6, "vsrx30-24.4R1.9", "/addons/qemu/Juniper%20vSRX3.0/vsrx30-24.4R1.9.tgz"),
+        ])
+        idx["IOL"] = [at(7, "L3-ADVENTERPRISEK9-M-15.4-2T.bin", "/addons/iol/bin/L3-ADVENTERPRISEK9-M-15.4-2T.bin")]
+        idx["DYNAMIPS"] = [at(8, "c7200-[1]-a3jk9s-mz.124-25g.image", "/addons/dynamips/c7200-%5B1%5D-a3jk9s-mz.124-25g.image")]
+        r = {x["name"]: x for x in build_records(idx, KINDS)}
+        self.assertEqual(len(r), 8)
+        vsr, vsw = r["h3cvsr1k-7.1.064-R1362P12"], r["h3cvswitch_S9850-7.1.070-R7639P06"]
+        self.assertEqual((vsr["vendor"], vsr["folder"], vsr["model"]), ("H3C", "H3C/vSR", "vSR"))
+        self.assertEqual((vsw["vendor"], vsw["folder"], vsw["model"]), ("H3C", "H3C/vSW", "vSW"))
+        self.assertEqual((r["veos-4.33.1.1F"]["vendor"], r["veos-4.33.1.1F"]["folder"], r["veos-4.33.1.1F"]["model"]),
+                         ("Arista", "Arista vEOS", None))
+        self.assertEqual(r["asav-9-20-2"]["vendor"], "Cisco")          # bare image-name folder -> name rule
+        self.assertEqual(r["mystery-1"]["vendor"], "Other")
+        self.assertEqual(r["vsrx30-24.4R1.9"]["vendor"], "Juniper")    # buildable: from the kind
+        self.assertEqual(r["vsrx30-24.4R1.9"]["kind"], "juniper_vsrx")
+        iol = r["L3-ADVENTERPRISEK9-M-15.4-2T.bin"]
+        self.assertEqual((iol["vendor"], iol["folder"], iol["model"], iol["kind"]), ("Cisco", "iol/bin", None, "cisco_iol"))
+        dyn = r["c7200-[1]-a3jk9s-mz.124-25g.image"]
+        self.assertEqual((dyn["vendor"], dyn["folder"], dyn["model"], dyn["kind"], dyn["key"]),
+                         ("Cisco", "dynamips", None, None, "labhub:c7200-[1]-a3jk9s-mz.124-25g.image"))
+
+    def test_kind_vendor_display(self):
+        self.assertEqual(KINDS.vendor_of("paloalto_panos"), "Palo Alto")
+        self.assertEqual(KINDS.vendor_of("cisco_vios"), "Cisco")
+        self.assertEqual(KINDS.vendor_of(None, "Windows", "win-10"), "Microsoft")
+        self.assertEqual(KINDS.vendor_of(None, "kali", "kali-2020"), "Linux")
+        self.assertEqual(KINDS.vendor_of(None, None, "zzz"), "Other")
+
     def test_mirror_urls_order_skips_unlisted(self):
         idx = fake_index([])
         urls = mirror_urls(idx, "/addons/x%20y.tgz", ["drive", "legacy", "main"])

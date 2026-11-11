@@ -56,7 +56,8 @@ def local_record(kinds, filename, path, kind=None, ver=None, target=None, size=N
                                                                      if g != "ver"})}
     rec = {"source": "local", "key": f"local:{filename}", "name": filename, "kind": k.name,
            "version": hit["ver"], "target": hit["target"], "path": path, "size": size,
-           "family": hit["groups"].get("model"), "tag": k.tag_for(hit["target"]), "sha1": None, "md5": None}
+           "family": hit["groups"].get("model"), "tag": k.tag_for(hit["target"]), "sha1": None, "md5": None,
+           "vendor": kinds.vendor_of(k.name), "folder": None, "model": None}
     rec.update(extra or {})
     return rec
 

@@ -183,6 +183,77 @@ class JsonOutput(Env):
         return self.one_json(out)
 
 
+def inventory_index():
+    def at(i, name, path):
+        f = {"filename": path.rsplit("/", 1)[-1], "path": path, "size": 5, "extension": ".tgz", "file_type": "x",
+             "checksum": {"md5": f"{i:032x}", "sha1": f"{i:x}".ljust(40, "a")}}
+        return {"id": i, "name": name, "type": "x", "files": [f], "metadata": {"total_size": 5}}
+    idx = fake_index([
+        at(1, "h3cvsr1k-7.1.064-R1362P12", "/addons/qemu/H3C/vSR/h3cvsr1k-7.1.064-R1362P12.tgz"),
+        at(2, "h3cvswitch_S9850-7.1.070-R7639P06", "/addons/qemu/H3C/vSW/h3cvswitch_S9850-7.1.070-R7639P06.tgz"),
+        at(3, "paloalto-11.2.5", "/addons/qemu/Palo%20Alto/paloalto-11.2.5.tgz")])
+    idx["DYNAMIPS"] = [at(4, "c7200-adventerprisek9-mz.152-4.S2.image", "/addons/dynamips/c7200-adventerprisek9-mz.152-4.S2.image")]
+    return idx
+
+
+class VendorInventory(Env):
+    def run_inv(self, *argv):
+        with mock.patch("climg.index.load_index", return_value=(inventory_index(), {})):
+            return self.cli(*argv, index=False)
+
+    def test_dynamips_in_search_all(self):
+        rc, out, err = self.run_inv("search", "--all", "--json")
+        self.assertEqual(rc, 0, err)
+        recs = {r["name"]: r for r in json.loads(out)}
+        d = recs["c7200-adventerprisek9-mz.152-4.S2.image"]
+        self.assertEqual((d["vendor"], d["folder"], d["model"], d["kind"]), ("Cisco", "dynamips", None, None))
+        self.assertTrue(all(r["vendor"] for r in recs.values()))
+        self.assertEqual(recs[LOCAL]["vendor"], "Palo Alto")
+        self.assertIsNone(recs[LOCAL]["folder"])
+
+    def test_vendor_filter_is_case_insensitive(self):
+        for v in ("h3c", "H3C"):
+            rc, out, err = self.run_inv("search", "--all", "--json", "--vendor", v)
+            self.assertEqual(rc, 0, err)
+            recs = {r["name"]: r for r in json.loads(out)}
+            self.assertEqual(sorted(recs), ["h3cvsr1k-7.1.064-R1362P12", "h3cvswitch_S9850-7.1.070-R7639P06"])
+            self.assertEqual((recs["h3cvsr1k-7.1.064-R1362P12"]["folder"], recs["h3cvsr1k-7.1.064-R1362P12"]["model"]),
+                             ("H3C/vSR", "vSR"))
+            self.assertEqual(recs["h3cvswitch_S9850-7.1.070-R7639P06"]["folder"], "H3C/vSW")
+
+    def test_vendor_filter_accepts_kind_vendor_and_display(self):
+        for v in ("paloalto", "Palo Alto"):
+            rc, out, err = self.run_inv("search", "--json", "--vendor", v)
+            self.assertEqual({r["name"] for r in json.loads(out)}, {"paloalto-11.2.5", LOCAL}, v)
+
+    def test_keywords_match_vendor_and_folder(self):
+        rc, out, _ = self.run_inv("search", "--all", "--json", "--", "h3c", "vsw")
+        self.assertEqual([r["name"] for r in json.loads(out)], ["h3cvswitch_S9850-7.1.070-R7639P06"])
+        rc, out, _ = self.run_inv("search", "--all", "--json", "--", "dynamips")
+        self.assertEqual(len(json.loads(out)), 1)
+
+    def test_buildable_vendor_from_kind(self):
+        rc, out, _ = self.run_inv("search", "--json")
+        recs = {r["name"]: r for r in json.loads(out)}
+        self.assertEqual(recs["paloalto-11.2.5"]["kind"], "paloalto_panos")
+        self.assertEqual((recs["paloalto-11.2.5"]["vendor"], recs["paloalto-11.2.5"]["folder"]), ("Palo Alto", "Palo Alto"))
+
+    def test_index_json_vendors(self):
+        rc, out, err = self.run_inv("index", "--json")
+        self.assertEqual(rc, 0, err)
+        doc = json.loads(out)
+        self.assertEqual(doc["counts"], {"QEMU": 3, "IOL": 0, "DYNAMIPS": 1})
+        self.assertEqual(doc["vendors"], [{"vendor": "Cisco", "entries": 1, "buildable": 0},
+                                          {"vendor": "H3C", "entries": 2, "buildable": 0},
+                                          {"vendor": "Palo Alto", "entries": 1, "buildable": 1}])
+
+    def test_pull_unbuildable_and_dynamips_refused(self):
+        for ref in ("labhub:h3cvsr1k-7.1.064-R1362P12", "labhub:c7200-adventerprisek9-mz.152-4.S2.image"):
+            rc, out, err = self.run_inv("pull", "--json", "--yes", ref)
+            self.assertEqual(rc, 1, ref)
+            self.assertEqual(json.loads(out)["error"]["code"], "not_found", ref)
+
+
 class ErrorEnvelopeAndExitCodes(Env):
     def test_unknown_reference_not_found(self):               # JSON error envelope / Unknown reference
         rc, out, _ = self.cli("show", "--json", "--", "nope")
