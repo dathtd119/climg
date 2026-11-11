@@ -5,21 +5,30 @@ EVE-NG and PNETLab) but native to [containerlab](https://containerlab.dev): it f
 mirrors (the ishare2 index), builds them into docker images with [srl-labs/vrnetlab](https://github.com/srl-labs/vrnetlab),
 checks which images a topology needs, and writes ready-to-validate templates.
 
-Python 3.12, stdlib + PyYAML only (`pexpect` is imported lazily and only by `climg test`).
+Python 3.10+, stdlib + PyYAML only (`pexpect` is imported lazily and only by `climg test`).
 Every command is non-interactive (except the confirmation of `init`); anything that downloads or builds needs `--yes`.
 First run `climg init`: every command except `init`, `doctor` and `--help` fails with `no config: run \`climg init\`` until the config exists.
 
 ## Install
 
+With [pipx](https://pipx.pypa.io) (Python 3.10+; kinds, vendors and patches are bundled):
+
 ```
-git clone <this repo> ~/code/climg          # or rsync the directory
-~/code/climg/bin/climg --help               # no build step; optional: ln -s ~/code/climg/bin/climg ~/.local/bin/climg
+pipx install git+https://github.com/dathtd119/climg
+climg --version
+```
+
+From a checkout (no build step; `bin/climg` uses the repo-root `kinds.yaml`, `vendors.yaml` and `patches/`, symlinks to `climg/data/`):
+
+```
+git clone https://github.com/dathtd119/climg ~/code/climg          # or rsync the directory
+~/code/climg/bin/climg --help               # optional: ln -s ~/code/climg/bin/climg ~/.local/bin/climg
 python3 -m unittest discover -s tests       # self-check
 ```
 
-Host requirements: python3.12 with PyYAML, `make`, docker, containerlab, an up-to-date vrnetlab checkout
-(never modified: builds run in a private work copy), and `pexpect` + an `ssh` client for `climg test`.
-No sudo, pip or uv is needed.
+Host requirements: python3 (3.10+) with PyYAML, `make`, docker, containerlab, an up-to-date vrnetlab checkout
+(never modified: builds run in a private work copy), and `pexpect` + an `ssh` client for `climg test`
+(`pipx inject climg pexpect`). No sudo is needed.
 
 ## Config
 
