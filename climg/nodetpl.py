@@ -334,7 +334,7 @@ def _record(cfg, ops, changes, owned, base, forgotten):
     for action, name, _ in changes:
         if action == "deleted":
             names.discard(name)
-    names -= forgotten
+    names -= forgotten - created
     if names != owned or gen != base:
         save_owned(cfg, names, gen)
 
@@ -359,8 +359,9 @@ def apply_ops(cfg, ops, writer=None, dry_run=False, kinds=None):
         if current is None:
             current = w.initial()
         new, changes, skipped = merge(current, ops, owned, base, regen_for(kinds))
-        # owned names that were removed by someone else are forgotten so a later user entry is never claimed
-        forgotten = owned - {c.get("name") for c in new}
+        # owned names that were removed by someone else before this merge are forgotten so a later user entry is never
+        # claimed; names this run deletes/prunes are disowned only once the writer applied them (changes)
+        forgotten = owned - {c.get("name") for c in current}
         if not dry_run and not over_rest:
             if changes:
                 w.commit(new, changes)

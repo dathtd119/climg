@@ -585,6 +585,63 @@ class ApplyOpsLockTests(unittest.TestCase):
         self.assertTrue(self.free_during_commit)
         self.assertEqual(nodetpl.load_owned(self.cfg), set())
 
+    def rest_store(self, names, fail_on=None):
+        """FakeRest whose store applies each successful request; `fail_on` ("DELETE"/"POST") raises instead."""
+        w = self.fake_rest(lambda: None)
+        w.store = [{"name": n, "kind": "linux", "image": "x"} for n in names]
+
+        def commit(new, changes):
+            by = {c["name"]: c for c in new}
+            w.applied = []
+            for ch in changes:
+                action, name, _ = ch
+                verb = "DELETE" if action == "deleted" else "POST"
+                if verb == fail_on:
+                    raise ClimgError(f"{verb} {name}: HTTP 500")
+                if action == "deleted":
+                    w.store = [c for c in w.store if c["name"] != name]
+                else:
+                    w.store = [c for c in w.store if c["name"] != name] + [dict(by[name])]
+                w.applied.append(ch)
+        w.commit = commit
+        return w
+
+    def own(self, names):
+        nodetpl.save_owned(self.cfg, set(names), {n: {"name": n, "kind": "linux", "image": "x"} for n in names})
+
+    def assert_owned_is_store(self, w, names):
+        self.assertEqual({c["name"] for c in w.store}, set(names))
+        self.assertEqual(nodetpl.load_owned(self.cfg), set(names))
+
+    def test_rest_delete_failure_keeps_ownership(self):
+        w = self.rest_store(["A"], fail_on="DELETE")
+        self.own(["A"])
+        with self.assertRaises(ClimgError):
+            nodetpl.apply_ops(self.cfg, [("delete", "A")], w, kinds=KINDS)
+        self.assert_owned_is_store(w, ["A"])
+
+    def test_rest_delete_success_disowns(self):
+        w = self.rest_store(["A"])
+        self.own(["A"])
+        nodetpl.apply_ops(self.cfg, [("delete", "A")], w, kinds=KINDS)
+        self.assert_owned_is_store(w, [])
+
+    def test_rest_sync_post_failure_keeps_pruned_owned(self):
+        w = self.rest_store(["B"], fail_on="POST")
+        self.own(["B"])
+        ops = [("upsert", {"name": "C", "kind": "linux", "image": "x"}), ("prune", "B")]
+        with self.assertRaises(ClimgError):
+            nodetpl.apply_ops(self.cfg, ops, w, kinds=KINDS)
+        self.assert_owned_is_store(w, ["B"])
+
+    def test_rest_sync_delete_failure_keeps_unpruned_owned(self):
+        w = self.rest_store(["B"], fail_on="DELETE")
+        self.own(["B"])
+        ops = [("upsert", {"name": "C", "kind": "linux", "image": "x"}), ("prune", "B")]
+        with self.assertRaises(ClimgError):
+            nodetpl.apply_ops(self.cfg, ops, w, kinds=KINDS)
+        self.assert_owned_is_store(w, ["B", "C"])
+
     def test_file_writer_holds_lock_across_commit(self):
         w = nodetpl.FileWriter(self.cfg)
         real, seen = w.commit, []
