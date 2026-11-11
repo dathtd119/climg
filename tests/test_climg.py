@@ -1,3 +1,4 @@
+import fcntl
 import json
 import os
 import sys
@@ -13,6 +14,7 @@ from climg.catalog import load_kinds  # noqa: E402
 from climg.config import Config  # noqa: E402
 from climg.core import Inventory  # noqa: E402
 from climg.index import build_records, mirror_urls  # noqa: E402
+from climg.util import ClimgError  # noqa: E402
 
 KINDS = load_kinds()
 CREDS = {"username": "admin", "password": "test-only-not-a-real-password"}
@@ -512,6 +514,89 @@ class KeepUserEditsTests(unittest.TestCase):
             self.assertEqual((cur["interfacePattern"], cur["icon"]), ("gei-0/1/{n}", "switch"))
             self.assertEqual(nodetpl.load_generated(cfg)[e["name"]]["icon"], "switch")
             self.assertTrue(nodetpl.is_customized(cur, nodetpl.load_generated(cfg)[e["name"]]))
+
+
+class ApplyOpsLockTests(unittest.TestCase):
+    """nodetpl.lock must be free while a REST commit runs (the app mutex may be held by a file-writer run waiting for it)."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        d = self.tmp.name
+        self.cfg = Config({"state_dir": d, "nodetpl_file": os.path.join(d, "ui", "custom-nodes.json"),
+                           "nodetpl_url": "https://127.0.0.1:1"}, "x")
+        self.e = nodetpl.entry_for_tag(KINDS, "vrnetlab/cisco_vios:159-3.m6")
+
+    def lock_free(self):
+        with open(self.cfg.nodetpl_lock_file, "w") as fh:
+            try:
+                fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return False
+            fcntl.flock(fh, fcntl.LOCK_UN)
+            return True
+
+    def fake_rest(self, during):
+        outer = self
+
+        class FakeRest(nodetpl.Rest):
+            name = "rest"
+
+            def __init__(self):
+                self.store = []
+
+            def read(self):
+                return [dict(c) for c in self.store]
+
+            initial = read
+
+            def commit(self, new, changes):
+                outer.free_during_commit = outer.lock_free()
+                during()
+                self.store = [dict(c) for c in new]
+        return FakeRest()
+
+    def test_rest_releases_lock_and_records_after_commit(self):
+        other = {"name": "from-concurrent-run", "kind": "linux", "image": "x"}
+
+        def concurrent():                     # another climg run completes between our release and re-lock
+            with nodetpl.locked(self.cfg):
+                nodetpl.save_owned(self.cfg, {other["name"]}, {other["name"]: other})
+
+        w = self.fake_rest(concurrent)
+        ch, _, via = nodetpl.apply_ops(self.cfg, [("upsert", self.e)], w, kinds=KINDS)
+        self.assertEqual((ch, via), ([("created", self.e["name"], [])], "rest"))
+        self.assertTrue(self.free_during_commit)
+        self.assertEqual(nodetpl.load_owned(self.cfg), {self.e["name"], other["name"]})
+        gen = nodetpl.load_generated(self.cfg)
+        self.assertEqual(gen[self.e["name"]], self.e)
+        self.assertIn(other["name"], gen)
+        self.assertTrue(self.lock_free())
+
+    def test_rest_failure_records_nothing_applied(self):
+        w = self.fake_rest(lambda: None)
+
+        def boom(new, changes):
+            self.free_during_commit = self.lock_free()
+            raise ClimgError("unreachable")
+        w.commit = boom
+        with self.assertRaises(ClimgError):
+            nodetpl.apply_ops(self.cfg, [("upsert", self.e)], w, kinds=KINDS)
+        self.assertTrue(self.free_during_commit)
+        self.assertEqual(nodetpl.load_owned(self.cfg), set())
+
+    def test_file_writer_holds_lock_across_commit(self):
+        w = nodetpl.FileWriter(self.cfg)
+        real, seen = w.commit, []
+
+        def commit(new, changes):
+            seen.append(self.lock_free())
+            real(new, changes)
+        w.commit = commit
+        nodetpl.apply_ops(self.cfg, [("upsert", self.e)], w, kinds=KINDS)
+        self.assertEqual(seen, [False])
+        self.assertEqual(nodetpl.load_owned(self.cfg), {self.e["name"]})
+        self.assertTrue(self.lock_free())
 
 
 class InitTests(unittest.TestCase):

@@ -284,11 +284,14 @@ class Rest:
 
     def commit(self, new, changes):
         by = {c["name"]: c for c in new}
-        for action, name, _ in changes:
+        self.applied = []                        # changes that went through, so a part-way failure is recorded exactly
+        for ch in changes:
+            action, name, _ = ch
             if action == "deleted":
                 self._req("DELETE", "/api/runtime/ui/custom-nodes/" + urllib.parse.quote(name, safe=""))
             else:
                 self._req("POST", "/api/runtime/ui/custom-nodes", by[name])
+            self.applied.append(ch)
 
 
 def reachable(cfg):
@@ -317,10 +320,38 @@ def locked(cfg):
             fcntl.flock(fh, fcntl.LOCK_UN)
 
 
+def _record(cfg, ops, changes, owned, base, forgotten):
+    """Save the owned names / generated baselines after `changes` were committed. `owned`/`base` are the records as
+    they are now on disk; `forgotten` are owned names that someone else removed from the store (never re-claimed)."""
+    created = {n for a, n, _ in changes if a == "created"}
+    touched = {n for _, n, _ in changes}
+    gen, names = dict(base), set(owned)
+    for op, arg in ops:                          # the new generated entry is the baseline of the next merge
+        if op == "upsert" and (arg["name"] in owned or arg["name"] in created) and (
+                not isinstance(ops, _Partial) or arg["name"] in touched):
+            names.add(arg["name"])
+            gen[arg["name"]] = arg
+    for action, name, _ in changes:
+        if action == "deleted":
+            names.discard(name)
+    names -= forgotten
+    if names != owned or gen != base:
+        save_owned(cfg, names, gen)
+
+
+class _Partial(list):
+    """ops of a commit that failed part-way: only upserts the writer reported as applied are recorded."""
+
+
 def apply_ops(cfg, ops, writer=None, dry_run=False, kinds=None):
     """Locked read-merge-write of the given ops; returns (changes, skipped, writer name); changes are
-    (action, name, kept) with kept = the fields whose user-edited value was preserved."""
+    (action, name, kept) with kept = the fields whose user-edited value was preserved.
+
+    The file writer commits while nodetpl.lock is held. The REST writer must not: the app serializes its custom-nodes
+    routes behind a mutex that may be held by a `climg --writer file` run waiting for this lock, so the lock is
+    released around the HTTP calls and the owned/generated records are re-read and updated afterwards."""
     w = writer or pick_writer(cfg)
+    over_rest = isinstance(w, Rest)
     with locked(cfg):
         owned = load_owned(cfg)
         base = load_generated(cfg)
@@ -328,23 +359,25 @@ def apply_ops(cfg, ops, writer=None, dry_run=False, kinds=None):
         if current is None:
             current = w.initial()
         new, changes, skipped = merge(current, ops, owned, base, regen_for(kinds))
-        if not dry_run:
+        # owned names that were removed by someone else are forgotten so a later user entry is never claimed
+        forgotten = owned - {c.get("name") for c in new}
+        if not dry_run and not over_rest:
             if changes:
                 w.commit(new, changes)
-            present = {c.get("name") for c in new}
-            created = {n for a, n, _ in changes if a == "created"}
-            gen, names = dict(base), set(owned)
-            for op, arg in ops:                      # the new generated entry is the baseline of the next merge
-                if op == "upsert" and (arg["name"] in owned or arg["name"] in created):
-                    names.add(arg["name"])
-                    gen[arg["name"]] = arg
-            for action, name, _ in changes:
-                if action == "deleted":
-                    names.discard(name)
-            # owned names that were removed by someone else are forgotten so a later user entry is never claimed
-            names &= present
-            if names != owned or gen != base:
-                save_owned(cfg, names, gen)
+            _record(cfg, ops, changes, owned, base, forgotten)
+    if not dry_run and over_rest:
+        err = None
+        if changes:
+            try:
+                w.commit(new, changes)
+            except ClimgError as ex:
+                err = ex
+                changes = [c for c in changes if c in getattr(w, "applied", [])]
+                ops = _Partial(ops)
+        with locked(cfg):
+            _record(cfg, ops, changes, load_owned(cfg), load_generated(cfg), forgotten)
+        if err:
+            raise err
     for name, why in skipped:
         warn(f"node template {name!r} skipped: {why}")
     return changes, skipped, w.name
