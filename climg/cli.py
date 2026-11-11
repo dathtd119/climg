@@ -795,7 +795,10 @@ def _error_doc(code, message):
 
 
 def main(argv=None):
-    args = make_parser().parse_args(argv)     # a usage error exits 2 here (argparse), nowhere else
+    parser = make_parser()
+    args = parser.parse_args(argv)     # a usage error exits 2 here (argparse), nowhere else
+    if args.cmd == "nodetpl" and args.action == "list" and args.target:
+        parser.error("nodetpl list takes no target")   # py3.13 argparse accepts the extra positional; 3.12 did not
     as_json = getattr(args, "json", False)
     saved = (sys.stdout, sys.stdin, signal.getsignal(signal.SIGTERM))
     job = None
